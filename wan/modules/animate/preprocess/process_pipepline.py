@@ -169,6 +169,9 @@ class ProcessPipeline():
         bg_inpaint_mask_expand=16,
         bg_inpaint_radius=5.0,
         bg_temporal_smooth_strength=0.0,
+        bg_video_window_radius=4,
+        bg_video_min_visible_count=2,
+        bg_video_blend_strength=0.7,
         reference_normalization_mode="none",
         reference_target_bbox_source="median_first_n",
         reference_target_bbox_frames=16,
@@ -514,10 +517,14 @@ class ProcessPipeline():
                 hard_foreground_masks,
                 bg_inpaint_mode=bg_inpaint_mode,
                 soft_band=boundary_band_masks,
+                background_keep_prior=background_keep_prior_masks,
                 bg_inpaint_mask_expand=bg_inpaint_mask_expand,
                 bg_inpaint_radius=bg_inpaint_radius,
                 bg_inpaint_method=bg_inpaint_method,
                 bg_temporal_smooth_strength=bg_temporal_smooth_strength,
+                bg_video_window_radius=bg_video_window_radius,
+                bg_video_min_visible_count=bg_video_min_visible_count,
+                bg_video_blend_strength=bg_video_blend_strength,
             )
             bg_images = np.stack(bg_images).astype(np.uint8)
             runtime_stage_seconds["background_clean_plate"] = time.perf_counter() - background_start
@@ -664,6 +671,13 @@ class ProcessPipeline():
                     artifact_format="mp4",
                     fps=fps,
                 )
+                qa_background_temporal_diff = write_rgb_artifact(
+                    frames=background_debug["background_temporal_diff"].astype(np.uint8),
+                    output_root=output_path,
+                    stem="background_temporal_diff",
+                    artifact_format="mp4",
+                    fps=fps,
+                )
                 qa_background_mask = write_person_mask_artifact(
                     mask_frames=background_debug["inpaint_mask"].astype(np.float32),
                     output_root=output_path,
@@ -672,12 +686,49 @@ class ProcessPipeline():
                     fps=fps,
                     mask_semantics="background_inpaint_region",
                 )
+                qa_background_support = write_person_mask_artifact(
+                    mask_frames=background_debug["support_mask"].astype(np.float32),
+                    output_root=output_path,
+                    stem="background_visible_support",
+                    artifact_format="mp4",
+                    fps=fps,
+                    mask_semantics="background_visible_support",
+                )
+                qa_background_unresolved = write_person_mask_artifact(
+                    mask_frames=background_debug["unresolved_mask"].astype(np.float32),
+                    output_root=output_path,
+                    stem="background_unresolved_region",
+                    artifact_format="mp4",
+                    fps=fps,
+                    mask_semantics="background_unresolved_region",
+                )
                 qa_outputs.update({
                     "background_hole": qa_background_hole["path"],
                     "background_clean_plate": qa_background_clean["path"],
                     "background_diff": qa_background_diff["path"],
+                    "background_temporal_diff": qa_background_temporal_diff["path"],
                     "background_inpaint_mask": qa_background_mask["path"],
+                    "background_visible_support": qa_background_support["path"],
+                    "background_unresolved_region": qa_background_unresolved["path"],
                 })
+                if background_debug.get("clean_plate_image_background") is not None:
+                    qa_background_image = write_rgb_artifact(
+                        frames=background_debug["clean_plate_image_background"].astype(np.uint8),
+                        output_root=output_path,
+                        stem="background_clean_plate_image",
+                        artifact_format="mp4",
+                        fps=fps,
+                    )
+                    qa_outputs["background_clean_plate_image"] = qa_background_image["path"]
+                if background_debug.get("clean_plate_video_background") is not None:
+                    qa_background_video = write_rgb_artifact(
+                        frames=background_debug["clean_plate_video_background"].astype(np.uint8),
+                        output_root=output_path,
+                        stem="background_clean_plate_video",
+                        artifact_format="mp4",
+                        fps=fps,
+                    )
+                    qa_outputs["background_clean_plate_video"] = qa_background_video["path"]
                 if reference_normalization_mode != "none":
                     original_canvas = padding_resize(refer_img, height, width)
                     original_bbox_canvas = project_bbox_with_letterbox(
@@ -805,6 +856,11 @@ class ProcessPipeline():
                 fps=float(fps),
                 preprocess_runtime_profile=self.sam_runtime_config.get("profile_name"),
             )
+            runtime_stats["background"] = {
+                "mode": background_debug.get("background_mode"),
+                "stats": background_debug.get("stats", {}),
+            }
+            runtime_metrics["background_mode"] = background_debug.get("background_mode")
             outputs = {
                 "frame_count": len(export_frames),
                 "fps": float(fps),
@@ -824,6 +880,10 @@ class ProcessPipeline():
                     "parsing_stats": parsing_output["stats"],
                     "matting_stats": matting_output["stats"],
                     "fusion_stats": boundary_fusion["stats"],
+                },
+                "background": {
+                    "mode": background_debug.get("background_mode"),
+                    "stats": background_debug.get("stats", {}),
                 },
                 "sam_runtime": dict(self.sam_runtime_config),
                 "sam_apply_postprocessing": bool(self.sam_apply_postprocessing),

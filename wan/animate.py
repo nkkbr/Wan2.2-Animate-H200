@@ -388,7 +388,10 @@ class WanAnimate:
             )
 
         background_mode = (
-            preprocess_metadata.get("processing", {}).get("background", {}).get("bg_inpaint_mode")
+            preprocess_metadata.get("src_files", {}).get("background", {}).get(
+                "background_mode",
+                preprocess_metadata.get("processing", {}).get("background", {}).get("bg_inpaint_mode"),
+            )
             if preprocess_metadata is not None else None
         )
         background_frames = None
@@ -861,9 +864,9 @@ class WanAnimate:
                 preprocess_metadata["replace_flag"],
             )
             if replace_flag:
-                background_mode = preprocess_metadata.get("processing", {}).get("background", {}).get(
-                    "bg_inpaint_mode",
-                    preprocess_metadata.get("src_files", {}).get("background", {}).get("background_mode", "unknown"),
+                background_mode = preprocess_metadata.get("src_files", {}).get("background", {}).get(
+                    "background_mode",
+                    preprocess_metadata.get("processing", {}).get("background", {}).get("bg_inpaint_mode", "unknown"),
                 )
                 reference_mode = preprocess_metadata.get("processing", {}).get("reference_normalization", {}).get(
                     "reference_normalization_mode",
@@ -1032,9 +1035,9 @@ class WanAnimate:
             "boundary_refine_sharpen": float(boundary_refine_sharpen) if replace_flag else None,
             "boundary_refine_use_clean_plate": bool(boundary_refine_use_clean_plate) if replace_flag else None,
             "background_mode": (
-                preprocess_metadata.get("processing", {}).get("background", {}).get(
-                    "bg_inpaint_mode",
-                    preprocess_metadata.get("src_files", {}).get("background", {}).get("background_mode", "unknown"),
+                preprocess_metadata.get("src_files", {}).get("background", {}).get(
+                    "background_mode",
+                    preprocess_metadata.get("processing", {}).get("background", {}).get("bg_inpaint_mode", "unknown"),
                 )
                 if replace_flag and preprocess_metadata is not None else None
             ),

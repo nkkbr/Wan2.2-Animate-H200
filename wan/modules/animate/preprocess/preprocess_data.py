@@ -459,6 +459,24 @@ def _parse_args():
         help="EMA-like temporal smoothing strength applied only inside inpainted regions of the clean plate."
     )
     parser.add_argument(
+        "--bg_video_window_radius",
+        type=int,
+        default=4,
+        help="Half window radius used by clean_plate_video when aggregating visible background from neighboring frames."
+    )
+    parser.add_argument(
+        "--bg_video_min_visible_count",
+        type=int,
+        default=2,
+        help="Minimum number of visible background observations required before clean_plate_video trusts a temporal prefill."
+    )
+    parser.add_argument(
+        "--bg_video_blend_strength",
+        type=float,
+        default=0.7,
+        help="Blend strength between temporal background aggregation and the image clean-plate fallback in clean_plate_video mode."
+    )
+    parser.add_argument(
         "--reference_normalization_mode",
         type=str,
         default="none",
@@ -575,12 +593,16 @@ if __name__ == '__main__':
     assert Path(args.video_path).exists(), f"Video path does not exist: {args.video_path}"
     assert args.refer_path is not None, "Please provide --refer_path."
     assert Path(args.refer_path).exists(), f"Reference image path does not exist: {args.refer_path}"
-    if args.bg_inpaint_mode == "video":
-        raise NotImplementedError("bg_inpaint_mode=video is reserved for a future step. Use 'none' or 'image' in the current pipeline.")
     if args.reference_scale_clamp_min <= 0 or args.reference_scale_clamp_max <= 0:
         raise ValueError("reference_scale_clamp_min and reference_scale_clamp_max must be > 0.")
     if args.reference_scale_clamp_min > args.reference_scale_clamp_max:
         raise ValueError("reference_scale_clamp_min must be <= reference_scale_clamp_max.")
+    if args.bg_video_window_radius < 1:
+        raise ValueError("bg_video_window_radius must be >= 1.")
+    if args.bg_video_min_visible_count < 1:
+        raise ValueError("bg_video_min_visible_count must be >= 1.")
+    if not 0.0 <= float(args.bg_video_blend_strength) <= 1.0:
+        raise ValueError("bg_video_blend_strength must be in [0, 1].")
     run_layout = None
     manifest_token = None
     if should_write_manifest(args):
@@ -682,6 +704,9 @@ if __name__ == '__main__':
                                             bg_inpaint_mask_expand=args.bg_inpaint_mask_expand,
                                             bg_inpaint_radius=args.bg_inpaint_radius,
                                             bg_temporal_smooth_strength=args.bg_temporal_smooth_strength,
+                                            bg_video_window_radius=args.bg_video_window_radius,
+                                            bg_video_min_visible_count=args.bg_video_min_visible_count,
+                                            bg_video_blend_strength=args.bg_video_blend_strength,
                                             reference_normalization_mode=args.reference_normalization_mode,
                                             reference_target_bbox_source=args.reference_target_bbox_source,
                                             reference_target_bbox_frames=args.reference_target_bbox_frames,
@@ -784,6 +809,10 @@ if __name__ == '__main__':
                 "bg_inpaint_mask_expand": args.bg_inpaint_mask_expand,
                 "bg_inpaint_radius": args.bg_inpaint_radius,
                 "bg_temporal_smooth_strength": args.bg_temporal_smooth_strength,
+                "bg_video_window_radius": args.bg_video_window_radius,
+                "bg_video_min_visible_count": args.bg_video_min_visible_count,
+                "bg_video_blend_strength": args.bg_video_blend_strength,
+                "stats": pipeline_outputs.get("background", {}),
             },
             boundary_fusion_settings={
                 "boundary_fusion_mode": args.boundary_fusion_mode,
