@@ -15,6 +15,7 @@ from wan.utils.experiment import (
     should_write_manifest,
     start_stage_manifest,
 )
+from wan.utils.animate_contract import build_preprocess_metadata, write_preprocess_metadata
 
 
 def _parse_args():
@@ -129,6 +130,12 @@ if __name__ == '__main__':
 
     assert len(args.resolution_area) == 2, "resolution_area should be a list of two integers [width, height]"
     assert not args.use_flux or args.retarget_flag, "Image editing with FLUX can only be used when pose retargeting is enabled."
+    assert args.ckpt_path is not None, "Please provide --ckpt_path."
+    assert Path(args.ckpt_path).exists(), f"Checkpoint path does not exist: {args.ckpt_path}"
+    assert args.video_path is not None, "Please provide --video_path."
+    assert Path(args.video_path).exists(), f"Video path does not exist: {args.video_path}"
+    assert args.refer_path is not None, "Please provide --refer_path."
+    assert Path(args.refer_path).exists(), f"Reference image path does not exist: {args.refer_path}"
     run_layout = None
     manifest_token = None
     if should_write_manifest(args):
@@ -160,25 +167,47 @@ if __name__ == '__main__':
             },
         )
     try:
-        process_pipeline(video_path=args.video_path,
-                         refer_image_path=args.refer_path,
-                         output_path=args.save_path,
-                         resolution_area=args.resolution_area,
-                         fps=args.fps,
-                         iterations=args.iterations,
-                         k=args.k,
-                         w_len=args.w_len,
-                         h_len=args.h_len,
-                         retarget_flag=args.retarget_flag,
-                         use_flux=args.use_flux,
-                         replace_flag=args.replace_flag)
+        pipeline_outputs = process_pipeline(video_path=args.video_path,
+                                            refer_image_path=args.refer_path,
+                                            output_path=args.save_path,
+                                            resolution_area=args.resolution_area,
+                                            fps=args.fps,
+                                            iterations=args.iterations,
+                                            k=args.k,
+                                            w_len=args.w_len,
+                                            h_len=args.h_len,
+                                            retarget_flag=args.retarget_flag,
+                                            use_flux=args.use_flux,
+                                            replace_flag=args.replace_flag)
+        metadata = build_preprocess_metadata(
+            video_path=args.video_path,
+            refer_image_path=args.refer_path,
+            output_path=args.save_path,
+            replace_flag=args.replace_flag,
+            retarget_flag=args.retarget_flag,
+            use_flux=args.use_flux,
+            resolution_area=args.resolution_area,
+            fps_request=args.fps,
+            fps_output=pipeline_outputs["fps"],
+            frame_count=pipeline_outputs["frame_count"],
+            height=pipeline_outputs["height"],
+            width=pipeline_outputs["width"],
+            iterations=args.iterations,
+            k=args.k,
+            w_len=args.w_len,
+            h_len=args.h_len,
+            reference_height=pipeline_outputs["reference_height"],
+            reference_width=pipeline_outputs["reference_width"],
+        )
+        metadata_path = write_preprocess_metadata(args.save_path, metadata)
         if manifest_token is not None:
             output_dir = Path(args.save_path).resolve()
             stage_outputs = {
                 "save_path": str(output_dir),
                 "generated_files": sorted(str(path.resolve()) for path in output_dir.iterdir()),
+                "metadata_path": str(metadata_path.resolve()),
             }
-            for name in ["src_pose.mp4", "src_face.mp4", "src_bg.mp4", "src_mask.mp4", "src_ref.png"]:
+            for name in ["src_pose.mp4", "src_face.mp4", "src_bg.mp4", "src_mask.mp4", "src_ref.png", "metadata.json"]:
                 path = output_dir / name
                 if path.exists():
                     stage_outputs[path.stem] = str(path)

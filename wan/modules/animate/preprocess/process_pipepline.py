@@ -23,6 +23,7 @@ transformer.USE_FLASH_ATTN = False
 transformer.MATH_KERNEL_ON = True
 transformer.OLD_GPU = True
 from sam_utils import build_sam2_video_predictor
+from wan.utils.animate_contract import load_image_rgb, validate_rgb_video
 
 
 class ProcessPipeline():
@@ -61,6 +62,7 @@ class ProcessPipeline():
             print('target_num: {}'.format(target_num))
             idxs = get_frame_indices(frame_num, video_fps, target_num, fps)
             frames = video_reader.get_batch(idxs).asnumpy()
+            validate_rgb_video("replacement input video", frames)
 
             frames = [resize_by_area(frame, resolution_area[0] * resolution_area[1], divisor=16) for frame in frames]
             height, width = frames[0].shape[:2]
@@ -80,10 +82,10 @@ class ProcessPipeline():
                 face_images.append(face_image)
 
             logger.info(f"Processing reference image: {refer_image_path}")
-            refer_img = cv2.imread(refer_image_path)
+            refer_img = load_image_rgb(refer_image_path)
             src_ref_path = os.path.join(output_path, 'src_ref.png')
             shutil.copy(refer_image_path, src_ref_path)
-            refer_img = refer_img[..., ::-1]
+            reference_height, reference_width = refer_img.shape[:2]
 
             refer_img = padding_resize(refer_img, height, width)
             logger.info(f"Processing template video: {video_path}")
@@ -122,13 +124,21 @@ class ProcessPipeline():
             aug_masks_new = [np.stack([mask * 255, mask * 255, mask * 255], axis=2) for mask in aug_masks]
             src_mask_path = os.path.join(output_path, 'src_mask.mp4')
             mpy.ImageSequenceClip(aug_masks_new, fps=fps).write_videofile(src_mask_path)
-            return True
+            return {
+                "frame_count": len(frames),
+                "fps": float(fps),
+                "height": int(height),
+                "width": int(width),
+                "channels": 3,
+                "reference_height": int(reference_height),
+                "reference_width": int(reference_width),
+            }
         else:
             logger.info(f"Processing reference image: {refer_image_path}")
-            refer_img = cv2.imread(refer_image_path)
+            refer_img = load_image_rgb(refer_image_path)
             src_ref_path = os.path.join(output_path, 'src_ref.png')
             shutil.copy(refer_image_path, src_ref_path)
-            refer_img = refer_img[..., ::-1]
+            reference_height, reference_width = refer_img.shape[:2]
             
             refer_img = resize_by_area(refer_img, resolution_area[0] * resolution_area[1], divisor=16)
             
@@ -159,6 +169,7 @@ class ProcessPipeline():
             print('target_num: {}'.format(target_num))
             idxs = get_frame_indices(frame_num, video_fps, target_num, fps)
             frames = video_reader.get_batch(idxs).asnumpy()
+            validate_rgb_video("animation input video", frames)
 
             logger.info(f"Processing pose meta")
 
@@ -232,7 +243,15 @@ class ProcessPipeline():
 
             src_pose_path = os.path.join(output_path, 'src_pose.mp4')
             mpy.ImageSequenceClip(cond_images, fps=fps).write_videofile(src_pose_path)
-            return True
+            return {
+                "frame_count": len(frames),
+                "fps": float(fps),
+                "height": int(cond_images[0].shape[0]),
+                "width": int(cond_images[0].shape[1]),
+                "channels": 3,
+                "reference_height": int(reference_height),
+                "reference_width": int(reference_width),
+            }
 
     def get_editing_prompts(self, tpl_pose_metas, refer_pose_meta):
         arm_visible = False
@@ -351,4 +370,3 @@ class ProcessPipeline():
                 meta[key] = value
             metas_list.append(meta)
         return metas_list
-

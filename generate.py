@@ -25,6 +25,7 @@ from wan.utils.experiment import (
     should_write_manifest,
     start_stage_manifest,
 )
+from wan.utils.animate_contract import DEFAULT_REFERT_NUM, validate_refert_num
 from wan.utils.utils import merge_video_audio, save_video, str2bool
 
 
@@ -88,6 +89,11 @@ def _validate_args(args):
 
     cfg = WAN_CONFIGS[args.task]
 
+    if "animate" in args.task:
+        assert args.src_root_path is not None, "Please specify --src_root_path for Wan-Animate."
+        assert Path(args.src_root_path).exists(), f"src_root_path does not exist: {args.src_root_path}"
+        args.refert_num = validate_refert_num(args.refert_num)
+
     if args.sample_steps is None:
         args.sample_steps = cfg.sample_steps
 
@@ -99,6 +105,8 @@ def _validate_args(args):
 
     if args.frame_num is None:
         args.frame_num = cfg.frame_num
+    if "animate" in args.task:
+        assert args.frame_num % 4 == 1, "Wan-Animate requires --frame_num to satisfy 4n+1."
 
     args.base_seed = args.base_seed if args.base_seed >= 0 else random.randint(
         0, sys.maxsize)
@@ -262,8 +270,8 @@ def _parse_args():
     parser.add_argument(
         "--refert_num",
         type=int,
-        default=77,
-        help="How many frames used for temporal guidance. Recommended to be 1 or 5."
+        default=DEFAULT_REFERT_NUM,
+        help="How many frames are reused for temporal guidance between adjacent clips. Supported values are 1 and 5; 5 is the recommended default."
     )
     parser.add_argument(
         "--replace_flag",

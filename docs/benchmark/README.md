@@ -70,7 +70,14 @@
 - seam visibility
 
 
-## 6. 后续建议
+## 6. preprocess/generate 契约
+
+replacement 的 preprocess 输出目录现在包含正式的 `metadata.json`。
+字段说明见：
+
+- `docs/benchmark/animate_preprocess_metadata.md`
+
+## 7. 后续建议
 
 后续应把外部 benchmark 素材逐步补充到统一 manifest 中，并且每个新增素材都附带：
 

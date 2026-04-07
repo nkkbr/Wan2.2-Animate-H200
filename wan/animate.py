@@ -12,7 +12,6 @@ import torch
 
 import torch.distributed as dist
 from peft import set_peft_model_state_dict
-from decord import VideoReader
 from tqdm import tqdm
 import torch.nn.functional as F
 from .distributed.fsdp import shard_model
@@ -30,6 +29,15 @@ from .utils.fm_solvers import (
     retrieve_timesteps,
 )
 from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+from .utils.animate_contract import (
+    BACKGROUND_KEEP_MASK_SEMANTICS,
+    PERSON_MASK_SEMANTICS,
+    load_image_rgb,
+    read_video_rgb,
+    resolve_preprocess_artifacts,
+    validate_loaded_preprocess_bundle,
+    validate_refert_num,
+)
 
 
 
@@ -267,39 +275,25 @@ class WanAnimate:
         return img_pad
 
     def prepare_source(self, src_pose_path, src_face_path, src_ref_path):
-        pose_video_reader = VideoReader(src_pose_path)
-        pose_len = len(pose_video_reader)
-        pose_idxs = list(range(pose_len))
-        cond_images = pose_video_reader.get_batch(pose_idxs).asnumpy()
-
-        face_video_reader = VideoReader(src_face_path)
-        face_len = len(face_video_reader)
-        face_idxs = list(range(face_len))
-        face_images = face_video_reader.get_batch(face_idxs).asnumpy()
+        cond_images = read_video_rgb(src_pose_path)
+        face_images = read_video_rgb(src_face_path)
         height, width = cond_images[0].shape[:2]
-        refer_images = cv2.imread(src_ref_path)[..., ::-1]
+        refer_images = load_image_rgb(src_ref_path)
         refer_images = self.padding_resize(refer_images, height=height, width=width)
         return cond_images, face_images, refer_images
     
     def prepare_source_for_replace(self, src_bg_path, src_mask_path):
-        bg_video_reader = VideoReader(src_bg_path)
-        bg_len = len(bg_video_reader)
-        bg_idxs = list(range(bg_len))
-        bg_images = bg_video_reader.get_batch(bg_idxs).asnumpy()
-
-        mask_video_reader = VideoReader(src_mask_path)
-        mask_len = len(mask_video_reader)
-        mask_idxs = list(range(mask_len))
-        mask_images = mask_video_reader.get_batch(mask_idxs).asnumpy()
-        mask_images = mask_images[:, :, :, 0] / 255
-        return bg_images, mask_images
+        bg_images = read_video_rgb(src_bg_path)
+        person_mask_rgb = read_video_rgb(src_mask_path)
+        person_mask_images = person_mask_rgb[:, :, :, 0].astype(np.float32) / 255.0
+        return bg_images, person_mask_images
 
     def generate(
         self,
         src_root_path,
         replace_flag=False,
         clip_len=77,
-        refert_num=1,
+        refert_num=5,
         shift=5.0,
         sample_solver='dpm++',
         sampling_steps=20,
@@ -319,8 +313,8 @@ class WanAnimate:
                 Whether to use character replace.
             clip_len (`int`, *optional*, defaults to 77):
                 How many frames to generate per clips. The number should be 4n+1
-            refert_num (`int`, *optional*, defaults to 1):
-                How many frames used for temporal guidance. Recommended to be 1 or 5.
+            refert_num (`int`, *optional*, defaults to 5):
+                How many frames are reused for temporal guidance. Supported values are 1 and 5.
             shift (`float`, *optional*, defaults to 5.0):
                 Noise schedule shift parameter. 
             sample_solver (`str`, *optional*, defaults to 'dpm++'):
@@ -348,7 +342,7 @@ class WanAnimate:
                 - H: Frame height 
                 - W: Frame width 
         """
-        assert refert_num == 1 or refert_num == 5, "refert_num should be 1 or 5."
+        refert_num = validate_refert_num(refert_num)
 
         seed_g = torch.Generator(device=self.device)
         seed_g.manual_seed(seed)
@@ -359,11 +353,30 @@ class WanAnimate:
         if input_prompt == "":
             input_prompt = self.sample_prompt
 
-        src_pose_path = os.path.join(src_root_path, "src_pose.mp4")
-        src_face_path = os.path.join(src_root_path, "src_face.mp4")
-        src_ref_path = os.path.join(src_root_path, "src_ref.png")
+        artifacts, preprocess_metadata = resolve_preprocess_artifacts(
+            src_root_path,
+            replace_flag=replace_flag,
+            logger=logging.getLogger(__name__),
+        )
+        if preprocess_metadata is not None:
+            logging.info(
+                "Loaded preprocess metadata: storage_format=%s color_space=%s replace_flag=%s",
+                preprocess_metadata["storage_format"],
+                preprocess_metadata["color_space"],
+                preprocess_metadata["replace_flag"],
+            )
+            if replace_flag:
+                logging.info(
+                    "Mask contract: src_mask=%s, generate uses %s.",
+                    preprocess_metadata.get("mask_semantics", PERSON_MASK_SEMANTICS),
+                    BACKGROUND_KEEP_MASK_SEMANTICS,
+                )
 
-        cond_images, face_images, refer_images = self.prepare_source(src_pose_path=src_pose_path, src_face_path=src_face_path, src_ref_path=src_ref_path)
+        cond_images, face_images, refer_images = self.prepare_source(
+            src_pose_path=artifacts["pose"],
+            src_face_path=artifacts["face"],
+            src_ref_path=artifacts["reference"],
+        )
         
         if not self.t5_cpu:
             self.text_encoder.model.to(self.device)
@@ -384,11 +397,27 @@ class WanAnimate:
         face_images = self.inputs_padding(face_images, target_len)
         
         if replace_flag:
-            src_bg_path = os.path.join(src_root_path, "src_bg.mp4")
-            src_mask_path = os.path.join(src_root_path, "src_mask.mp4")
-            bg_images, mask_images = self.prepare_source_for_replace(src_bg_path, src_mask_path)
+            bg_images, person_mask_images = self.prepare_source_for_replace(
+                artifacts["background"],
+                artifacts["person_mask"],
+            )
+            validate_loaded_preprocess_bundle(
+                cond_images=np.asarray(cond_images[:real_frame_len]),
+                face_images=np.asarray(face_images[:real_frame_len]),
+                refer_image_rgb=refer_images,
+                metadata=preprocess_metadata,
+                bg_images=bg_images,
+                person_mask_images=person_mask_images,
+            )
             bg_images = self.inputs_padding(bg_images, target_len)
-            mask_images = self.inputs_padding(mask_images, target_len)
+            person_mask_images = self.inputs_padding(person_mask_images, target_len)
+        else:
+            validate_loaded_preprocess_bundle(
+                cond_images=np.asarray(cond_images[:real_frame_len]),
+                face_images=np.asarray(face_images[:real_frame_len]),
+                refer_image_rgb=refer_images,
+                metadata=preprocess_metadata,
+            )
 
         height, width = refer_images.shape[:2]
         start = 0
@@ -406,7 +435,7 @@ class WanAnimate:
             batch = {
                         "conditioning_pixel_values": torch.zeros(1, 3, clip_len, height, width),
                         "bg_pixel_values": torch.zeros(1, 3, clip_len, height, width),
-                        "mask_pixel_values": torch.zeros(1, 1, clip_len, height, width),
+                        "person_mask_pixel_values": torch.zeros(1, 1, clip_len, height, width),
                         "face_pixel_values": torch.zeros(1, 3, clip_len, 512, 512),
                         "refer_pixel_values": torch.zeros(1, 3, height, width),
                         "refer_t_pixel_values": torch.zeros(refert_num, 3, height, width)
@@ -441,8 +470,8 @@ class WanAnimate:
                     "t h w c -> 1 c t h w",
                 )
 
-                batch["mask_pixel_values"] = rearrange(
-                    torch.tensor(np.stack(mask_images[start:end])[:, :, :, None]),
+                batch["person_mask_pixel_values"] = rearrange(
+                    torch.tensor(np.stack(person_mask_images[start:end])[:, :, :, None]),
                     "t h w c -> 1 t c h w",
                 )
                 
@@ -527,11 +556,11 @@ class WanAnimate:
                                 torch.concat([refer_t_pixel_values[0, :, :mask_reft_len], bg_pixel_values[0, :, mask_reft_len:]], dim=1).to(self.device)
                             ]
                         )[0]
-                        mask_pixel_values = 1 - batch["mask_pixel_values"]
-                        mask_pixel_values = rearrange(mask_pixel_values, "b t c h w -> (b t) c h w")
-                        mask_pixel_values = F.interpolate(mask_pixel_values, size=(H//8, W//8), mode='nearest')
-                        mask_pixel_values = rearrange(mask_pixel_values, "(b t) c h w -> b t c h w", b=1)[:,:,0]
-                        msk_reft = self.get_i2v_mask(lat_t, lat_h, lat_w, mask_reft_len, mask_pixel_values=mask_pixel_values, device=self.device)
+                        background_keep_mask_pixel_values = 1 - batch["person_mask_pixel_values"]
+                        background_keep_mask_pixel_values = rearrange(background_keep_mask_pixel_values, "b t c h w -> (b t) c h w")
+                        background_keep_mask_pixel_values = F.interpolate(background_keep_mask_pixel_values, size=(H//8, W//8), mode='nearest')
+                        background_keep_mask_pixel_values = rearrange(background_keep_mask_pixel_values, "(b t) c h w -> b t c h w", b=1)[:,:,0]
+                        msk_reft = self.get_i2v_mask(lat_t, lat_h, lat_w, mask_reft_len, mask_pixel_values=background_keep_mask_pixel_values, device=self.device)
                     else:
                         y_reft = self.vae.encode(
                             [
@@ -549,10 +578,10 @@ class WanAnimate:
                 else:
                     if replace_flag:
                         bg_pixel_values = batch["bg_pixel_values"]
-                        mask_pixel_values = 1 - batch["mask_pixel_values"]
-                        mask_pixel_values = rearrange(mask_pixel_values, "b t c h w -> (b t) c h w")
-                        mask_pixel_values = F.interpolate(mask_pixel_values, size=(H//8, W//8), mode='nearest')
-                        mask_pixel_values = rearrange(mask_pixel_values, "(b t) c h w -> b t c h w", b=1)[:,:,0]
+                        background_keep_mask_pixel_values = 1 - batch["person_mask_pixel_values"]
+                        background_keep_mask_pixel_values = rearrange(background_keep_mask_pixel_values, "b t c h w -> (b t) c h w")
+                        background_keep_mask_pixel_values = F.interpolate(background_keep_mask_pixel_values, size=(H//8, W//8), mode='nearest')
+                        background_keep_mask_pixel_values = rearrange(background_keep_mask_pixel_values, "(b t) c h w -> b t c h w", b=1)[:,:,0]
                         y_reft = self.vae.encode(
                             [
                                 torch.concat(
@@ -563,7 +592,7 @@ class WanAnimate:
                                 ).to(self.device)
                             ]
                         )[0]
-                        msk_reft = self.get_i2v_mask(lat_t, lat_h, lat_w, mask_reft_len, mask_pixel_values=mask_pixel_values, device=self.device)
+                        msk_reft = self.get_i2v_mask(lat_t, lat_h, lat_w, mask_reft_len, mask_pixel_values=background_keep_mask_pixel_values, device=self.device)
                     else:
                         y_reft = self.vae.encode(
                             [
