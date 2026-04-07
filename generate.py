@@ -141,6 +141,11 @@ def _validate_args(args):
             "--overlap_background_current_strength must be in [0, 1]."
         )
         assert args.seam_debug_max_points >= 0, "--seam_debug_max_points must be >= 0."
+        assert args.temporal_handoff_mode in {"pixel", "latent", "hybrid"}, (
+            "--temporal_handoff_mode must be one of: pixel, latent, hybrid."
+        )
+        assert 0.0 <= args.temporal_handoff_strength <= 1.0, "--temporal_handoff_strength must be in [0, 1]."
+        assert args.temporal_handoff_debug_max_points >= 0, "--temporal_handoff_debug_max_points must be >= 0."
         args.sample_guide_scale = float(args.sample_guide_scale)
         if args.guidance_uncond_mode == "auto":
             if args.face_guide_scale is not None or args.text_guide_scale is not None:
@@ -391,6 +396,25 @@ def _parse_args():
         type=int,
         default=6,
         help="How many seam debug bundles to export under save_debug_dir. Set to 0 to disable seam media dumps."
+    )
+    parser.add_argument(
+        "--temporal_handoff_mode",
+        type=str,
+        default="pixel",
+        choices=["pixel", "latent", "hybrid"],
+        help="Clip-to-clip temporal handoff prototype. 'pixel' keeps the current decode->re-encode baseline, while 'latent' and 'hybrid' explore latent-memory handoff."
+    )
+    parser.add_argument(
+        "--temporal_handoff_strength",
+        type=float,
+        default=1.0,
+        help="Blend strength for latent or hybrid temporal handoff prototypes."
+    )
+    parser.add_argument(
+        "--temporal_handoff_debug_max_points",
+        type=int,
+        default=4,
+        help="How many temporal handoff latent debug bundles to export under save_debug_dir. Set to 0 to disable."
     )
     parser.add_argument(
         "--replace_flag",
@@ -698,6 +722,9 @@ def generate(args):
                 overlap_blend_mode=args.overlap_blend_mode,
                 overlap_background_current_strength=args.overlap_background_current_strength,
                 seam_debug_max_points=args.seam_debug_max_points,
+                temporal_handoff_mode=args.temporal_handoff_mode,
+                temporal_handoff_strength=args.temporal_handoff_strength,
+                temporal_handoff_debug_max_points=args.temporal_handoff_debug_max_points,
                 guidance_uncond_mode=args.guidance_uncond_mode,
                 face_guide_scale=args.face_guide_scale,
                 text_guide_scale=args.text_guide_scale,
@@ -831,6 +858,10 @@ def generate(args):
                         "guidance_forward_passes_per_step": runtime_stats.get("guidance_forward_passes_per_step"),
                         "face_guide_scale": runtime_stats.get("face_guide_scale"),
                         "text_guide_scale": runtime_stats.get("text_guide_scale"),
+                        "temporal_handoff_mode": runtime_stats.get("temporal_handoff_mode"),
+                        "temporal_handoff_slots_mean": (runtime_stats.get("temporal_handoff_summary") or {}).get("latent_slots", {}).get("mean"),
+                        "temporal_handoff_base_to_memory_mad_mean": (runtime_stats.get("temporal_handoff_summary") or {}).get("base_to_memory_mad", {}).get("mean"),
+                        "temporal_handoff_composed_to_base_mad_mean": (runtime_stats.get("temporal_handoff_summary") or {}).get("composed_to_base_mad", {}).get("mean"),
                         "seam_boundary_before_mean": (runtime_stats.get("seam_summary") or {}).get("boundary_before", {}).get("mean"),
                         "seam_boundary_after_mean": (runtime_stats.get("seam_summary") or {}).get("boundary_after", {}).get("mean"),
                         "overlap_mad_before_mean": (runtime_stats.get("seam_summary") or {}).get("overlap_before", {}).get("mean"),

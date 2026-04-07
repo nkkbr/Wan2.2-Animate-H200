@@ -49,6 +49,11 @@ from .utils.clip_blending import (
 from .utils.guidance import combine_animate_guidance_predictions
 from .utils.media_io import load_mask_artifact, load_person_mask_artifact, load_rgb_artifact, write_person_mask_artifact
 from .utils.replacement_masks import compose_background_keep_mask, derive_replacement_regions, resize_mask_volume
+from .utils.temporal_handoff import (
+    compose_temporal_handoff_latents,
+    pack_overlap_tensor_to_latent_slots,
+    write_temporal_handoff_debug,
+)
 
 
 
@@ -454,6 +459,23 @@ class WanAnimate:
             "overlap_after_curr": summarize_scalar_series([item["overlap_mad_after_curr"] for item in seam_stats]),
         }
 
+    def _summarize_temporal_handoffs(self, handoff_stats):
+        if not handoff_stats:
+            return {}
+        numeric_keys = [
+            "latent_slots",
+            "blend_strength_mean",
+            "base_to_memory_mad",
+            "composed_to_base_mad",
+            "composed_to_memory_mad",
+        ]
+        summary = {}
+        for key in numeric_keys:
+            values = [item[key] for item in handoff_stats if item.get(key) is not None]
+            summary[key] = summarize_scalar_series(values)
+        summary["applied_count"] = int(sum(1 for item in handoff_stats if item.get("applied")))
+        return summary
+
     def _resolve_guidance_config(self, guidance_uncond_mode, face_guide_scale, text_guide_scale):
         if guidance_uncond_mode not in {"legacy_both", "face_only", "text_only", "decoupled"}:
             raise ValueError(f"Unsupported guidance_uncond_mode: {guidance_uncond_mode}")
@@ -500,6 +522,9 @@ class WanAnimate:
         overlap_blend_mode="mask_aware",
         overlap_background_current_strength=0.35,
         seam_debug_max_points=6,
+        temporal_handoff_mode="pixel",
+        temporal_handoff_strength=1.0,
+        temporal_handoff_debug_max_points=4,
         guidance_uncond_mode="legacy_both",
         face_guide_scale=1.0,
         text_guide_scale=1.0,
@@ -538,6 +563,13 @@ class WanAnimate:
                 Current-clip alpha multiplier used in hard background-keep regions during mask-aware blending.
             seam_debug_max_points (`int`, *optional*, defaults to 6):
                 How many seam comparison bundles are exported under save_debug_dir.
+            temporal_handoff_mode (`str`, *optional*, defaults to "pixel"):
+                Temporal handoff prototype. `pixel` preserves the baseline decode->re-encode path, `latent` reuses previous clip latents,
+                and `hybrid` keeps background-like regions from the pixel path while injecting latent memory into replacement regions.
+            temporal_handoff_strength (`float`, *optional*, defaults to 1.0):
+                Blend strength for `latent` and `hybrid` temporal handoff prototypes.
+            temporal_handoff_debug_max_points (`int`, *optional*, defaults to 4):
+                Number of temporal handoff latent bundles exported under save_debug_dir.
             guidance_uncond_mode (`str`, *optional*, defaults to "legacy_both"):
                 Guidance branch strategy. `legacy_both` preserves the original coupled text+face CFG behavior.
             face_guide_scale (`float`, *optional*, defaults to 1.0):
@@ -585,6 +617,16 @@ class WanAnimate:
             )
         if seam_debug_max_points < 0:
             raise ValueError(f"seam_debug_max_points must be >= 0. Got {seam_debug_max_points}.")
+        if temporal_handoff_mode not in {"pixel", "latent", "hybrid"}:
+            raise ValueError(f"Unsupported temporal_handoff_mode: {temporal_handoff_mode}")
+        if not 0.0 <= float(temporal_handoff_strength) <= 1.0:
+            raise ValueError(
+                f"temporal_handoff_strength must be in [0, 1]. Got {temporal_handoff_strength}."
+            )
+        if temporal_handoff_debug_max_points < 0:
+            raise ValueError(
+                f"temporal_handoff_debug_max_points must be >= 0. Got {temporal_handoff_debug_max_points}."
+            )
         guidance_config = self._resolve_guidance_config(
             guidance_uncond_mode=guidance_uncond_mode,
             face_guide_scale=face_guide_scale,
@@ -721,6 +763,9 @@ class WanAnimate:
             "overlap_blend_mode": overlap_blend_mode,
             "overlap_background_current_strength": float(overlap_background_current_strength),
             "seam_debug_max_points": int(seam_debug_max_points),
+            "temporal_handoff_mode": temporal_handoff_mode,
+            "temporal_handoff_strength": float(temporal_handoff_strength),
+            "temporal_handoff_debug_max_points": int(temporal_handoff_debug_max_points),
             "sampling_steps": sampling_steps,
             "guide_scale": float(guide_scale),
             "guidance_uncond_mode": guidance_config["mode"],
@@ -751,6 +796,7 @@ class WanAnimate:
             "static_condition_encode_sec": static_condition_encode_sec,
             "clip_stats": [],
             "seam_stats": [],
+            "temporal_handoff_stats": [],
         }
         if replacement_mask_debug:
             runtime_stats["replacement_mask_debug"] = replacement_mask_debug
@@ -768,6 +814,7 @@ class WanAnimate:
         start = 0
         end = clip_len
         all_out_frames = []
+        previous_output_latent = None
         clip_index = 0
         while True:
             if start + refert_num >= len(cond_images):
@@ -833,9 +880,14 @@ class WanAnimate:
             target_shape = [lat_t + 1, lat_h, lat_w]
             clip_background_keep_latent = None
             clip_transition_band_latent = None
+            clip_replacement_strength_latent = None
             if replace_flag:
                 clip_background_keep_latent = replacement_masks["background_keep_latent"][start:end].to(device=self.device, dtype=torch.float32)
                 clip_transition_band_latent = replacement_masks["latent_regions"]["transition_band"][start:end].to(device=self.device, dtype=torch.float32)
+                clip_replacement_strength_latent = replacement_masks["latent_regions"]["replacement_strength"][start:end].to(
+                    device=self.device,
+                    dtype=torch.float32,
+                )
             noise = [
                 torch.randn(
                     16,
@@ -883,72 +935,137 @@ class WanAnimate:
                 pose_latents_no_ref =  self.vae.encode(conditioning_pixel_values.to(torch.bfloat16))
                 pose_latents_no_ref = torch.stack(pose_latents_no_ref)
                 pose_latents = torch.cat([pose_latents_no_ref], dim=2)
+                temporal_handoff_stats = None
+                temporal_handoff_debug_paths = None
+                temporal_handoff_blend_mask = None
+                temporal_handoff_memory_latents = None
+                temporal_handoff_base_latents = None
 
-                if mask_reft_len > 0:
-                    if replace_flag:
-                        bg_pixel_values = batch["bg_pixel_values"]
-                        y_reft = self.vae.encode(
-                            [
-                                torch.concat([refer_t_pixel_values[0, :, :mask_reft_len], bg_pixel_values[0, :, mask_reft_len:]], dim=1).to(self.device)
-                            ]
-                        )[0]
-                        msk_reft = self.get_i2v_mask(
-                            lat_t,
-                            lat_h,
-                            lat_w,
-                            mask_reft_len,
-                            mask_pixel_values=clip_background_keep_latent[None],
-                            device=self.device,
-                        )
+                if replace_flag:
+                    bg_pixel_values = batch["bg_pixel_values"]
+                    if mask_reft_len > 0:
+                        pixel_handoff_input = torch.concat(
+                            [refer_t_pixel_values[0, :, :mask_reft_len], bg_pixel_values[0, :, mask_reft_len:]],
+                            dim=1,
+                        ).to(self.device)
                     else:
-                        y_reft = self.vae.encode(
-                            [
-                                torch.concat(
-                                    [
-                                        torch.nn.functional.interpolate(refer_t_pixel_values[0, :, :mask_reft_len].cpu(),
-                                                                        size=(H, W), mode="bicubic"),
-                                        torch.zeros(3, T - mask_reft_len, H, W),
-                                    ],
-                                    dim=1,
-                                ).to(self.device)
-                            ]
-                        )[0]
-                        msk_reft = self.get_i2v_mask(lat_t, lat_h, lat_w, mask_reft_len, device=self.device)
+                        pixel_handoff_input = torch.concat([bg_pixel_values[0]], dim=1).to(self.device)
+
+                    bg_only_input = torch.concat([bg_pixel_values[0]], dim=1).to(self.device)
+                    if temporal_handoff_mode == "pixel" or mask_reft_len == 0 or previous_output_latent is None:
+                        y_reft = self.vae.encode([pixel_handoff_input])[0]
+                        temporal_handoff_stats = {
+                            "mode": temporal_handoff_mode,
+                            "overlap_frames": int(mask_reft_len),
+                            "latent_slots": 0,
+                            "applied": False,
+                            "blend_strength_mean": 0.0,
+                            "base_to_memory_mad": None,
+                            "composed_to_base_mad": 0.0,
+                            "composed_to_memory_mad": None,
+                        }
+                    else:
+                        if temporal_handoff_mode == "latent":
+                            y_reft_base = self.vae.encode([bg_only_input])[0]
+                            replacement_strength_slots = None
+                        else:
+                            y_reft_base = self.vae.encode([pixel_handoff_input])[0]
+                            replacement_strength_slots = pack_overlap_tensor_to_latent_slots(
+                                clip_replacement_strength_latent[:mask_reft_len],
+                                reduction="mean",
+                            )
+                            temporal_handoff_blend_mask = replacement_strength_slots[: y_reft_base.shape[1]]
+                        temporal_handoff_base_latents = y_reft_base
+                        y_reft, temporal_handoff_stats = compose_temporal_handoff_latents(
+                            base_latents=y_reft_base,
+                            previous_output_latents=previous_output_latent,
+                            overlap_frames=mask_reft_len,
+                            mode=temporal_handoff_mode,
+                            strength=temporal_handoff_strength,
+                            replacement_strength_slots=replacement_strength_slots,
+                        )
+                        temporal_handoff_memory_latents = previous_output_latent[:, -temporal_handoff_stats["latent_slots"]:].to(
+                            dtype=torch.float32,
+                            device=y_reft.device,
+                        ) if temporal_handoff_stats["latent_slots"] > 0 else None
+
+                    msk_reft = self.get_i2v_mask(
+                        lat_t,
+                        lat_h,
+                        lat_w,
+                        mask_reft_len,
+                        mask_pixel_values=clip_background_keep_latent[None],
+                        device=self.device,
+                    )
                 else:
-                    if replace_flag:
-                        bg_pixel_values = batch["bg_pixel_values"]
-                        y_reft = self.vae.encode(
+                    if mask_reft_len > 0:
+                        pixel_handoff_input = torch.concat(
                             [
-                                torch.concat(
-                                    [
-                                        bg_pixel_values[0],
-                                    ],
-                                    dim=1,
-                                ).to(self.device)
-                            ]
-                        )[0]
-                        msk_reft = self.get_i2v_mask(
-                            lat_t,
-                            lat_h,
-                            lat_w,
-                            mask_reft_len,
-                            mask_pixel_values=clip_background_keep_latent[None],
-                            device=self.device,
-                        )
+                                torch.nn.functional.interpolate(
+                                    refer_t_pixel_values[0, :, :mask_reft_len].cpu(),
+                                    size=(H, W),
+                                    mode="bicubic",
+                                ),
+                                torch.zeros(3, T - mask_reft_len, H, W),
+                            ],
+                            dim=1,
+                        ).to(self.device)
+                        zero_input = torch.concat([torch.zeros(3, T - mask_reft_len, H, W)], dim=1).to(self.device)
                     else:
-                        y_reft = self.vae.encode(
-                            [
-                                torch.concat(
-                                    [
-                                        torch.zeros(3, T - mask_reft_len, H, W),
-                                    ],
-                                    dim=1,
-                                ).to(self.device)
-                            ]
-                        )[0]
-                        msk_reft = self.get_i2v_mask(lat_t, lat_h, lat_w, mask_reft_len, device=self.device)
+                        pixel_handoff_input = torch.concat([torch.zeros(3, T - mask_reft_len, H, W)], dim=1).to(self.device)
+                        zero_input = pixel_handoff_input
+
+                    if temporal_handoff_mode == "pixel" or mask_reft_len == 0 or previous_output_latent is None:
+                        y_reft = self.vae.encode([pixel_handoff_input])[0]
+                        temporal_handoff_stats = {
+                            "mode": temporal_handoff_mode,
+                            "overlap_frames": int(mask_reft_len),
+                            "latent_slots": 0,
+                            "applied": False,
+                            "blend_strength_mean": 0.0,
+                            "base_to_memory_mad": None,
+                            "composed_to_base_mad": 0.0,
+                            "composed_to_memory_mad": None,
+                        }
+                    else:
+                        y_reft_base = self.vae.encode([zero_input if temporal_handoff_mode == "latent" else pixel_handoff_input])[0]
+                        temporal_handoff_base_latents = y_reft_base
+                        y_reft, temporal_handoff_stats = compose_temporal_handoff_latents(
+                            base_latents=y_reft_base,
+                            previous_output_latents=previous_output_latent,
+                            overlap_frames=mask_reft_len,
+                            mode="latent" if temporal_handoff_mode == "hybrid" else temporal_handoff_mode,
+                            strength=temporal_handoff_strength,
+                            replacement_strength_slots=None,
+                        )
+                        temporal_handoff_memory_latents = previous_output_latent[:, -temporal_handoff_stats["latent_slots"]:].to(
+                            dtype=torch.float32,
+                            device=y_reft.device,
+                        ) if temporal_handoff_stats["latent_slots"] > 0 else None
+                    msk_reft = self.get_i2v_mask(lat_t, lat_h, lat_w, mask_reft_len, device=self.device)
 
                 clip_vae_encode_sec = time.perf_counter() - vae_encode_start_time
+                temporal_handoff_stats["clip_index"] = clip_index
+                temporal_handoff_stats["start_frame"] = int(start)
+                temporal_handoff_stats["mode_requested"] = temporal_handoff_mode
+                if (
+                    save_debug_dir is not None
+                    and temporal_handoff_stats.get("applied")
+                    and len(runtime_stats["temporal_handoff_stats"]) < temporal_handoff_debug_max_points
+                    and temporal_handoff_base_latents is not None
+                ):
+                    temporal_handoff_debug_paths = write_temporal_handoff_debug(
+                        save_debug_dir=save_debug_dir,
+                        handoff_index=len(runtime_stats["temporal_handoff_stats"]) + 1,
+                        stats=temporal_handoff_stats,
+                        base_latents=temporal_handoff_base_latents[:, :temporal_handoff_stats["latent_slots"]],
+                        memory_latents=temporal_handoff_memory_latents,
+                        composed_latents=y_reft[:, :temporal_handoff_stats["latent_slots"]],
+                        blend_mask=temporal_handoff_blend_mask[:temporal_handoff_stats["latent_slots"]]
+                        if temporal_handoff_blend_mask is not None and temporal_handoff_stats["latent_slots"] > 0 else None,
+                    )
+                    temporal_handoff_stats["debug_paths"] = temporal_handoff_debug_paths
+                runtime_stats["temporal_handoff_stats"].append(temporal_handoff_stats)
                 y_reft = torch.concat([msk_reft, y_reft]).to(dtype=torch.bfloat16, device=self.device)
                 y = torch.concat([static_reference_conditions["y_ref"], y_reft], dim=1)
 
@@ -1056,6 +1173,7 @@ class WanAnimate:
                 clip_sampling_sec = time.perf_counter() - sampling_start_time
                 vae_decode_start_time = time.perf_counter()
                 x0 = [x.to(dtype=torch.float32) for x in x0]
+                previous_output_latent = x0[0][:, 1:].detach().to(dtype=torch.bfloat16).cpu()
                 out_frames = torch.stack(self.vae.decode([x0[0][:, 1:]])).to(dtype=torch.float32).cpu()
                 clip_vae_decode_sec = time.perf_counter() - vae_decode_start_time
                 seam_debug_paths = None
@@ -1122,6 +1240,9 @@ class WanAnimate:
                     "start_frame": int(start),
                     "end_frame": int(end),
                     "mask_reft_len": int(mask_reft_len),
+                    "temporal_handoff_mode": temporal_handoff_mode,
+                    "temporal_handoff_applied": bool(temporal_handoff_stats.get("applied")),
+                    "temporal_handoff_latent_slots": int(temporal_handoff_stats.get("latent_slots", 0)),
                     "guidance_mode": guidance_config["mode"],
                     "guidance_forward_passes_per_step": int(guidance_config["forward_passes_per_step"]),
                     "vae_encode_sec": clip_vae_encode_sec,
@@ -1140,6 +1261,8 @@ class WanAnimate:
                     })
                 if seam_debug_paths is not None:
                     clip_stats["seam_debug_paths"] = seam_debug_paths
+                if temporal_handoff_debug_paths is not None:
+                    clip_stats["temporal_handoff_debug_paths"] = temporal_handoff_debug_paths
                 runtime_stats["clip_stats"].append(clip_stats)
                 if log_runtime_stats:
                     logging.info(
@@ -1171,6 +1294,7 @@ class WanAnimate:
             "peak_memory_gb": round(peak_memory_bytes / (1024 ** 3), 3) if peak_memory_bytes is not None else None,
         })
         runtime_stats["seam_summary"] = self._summarize_seams(runtime_stats["seam_stats"])
+        runtime_stats["temporal_handoff_summary"] = self._summarize_temporal_handoffs(runtime_stats["temporal_handoff_stats"])
         if save_debug_dir is not None and runtime_stats["seam_stats"]:
             runtime_stats["seam_debug_path"] = write_seam_summary(save_debug_dir, runtime_stats["seam_stats"])
         runtime_stats["stats_path"] = self._write_runtime_stats(save_debug_dir, runtime_stats)
@@ -1190,5 +1314,14 @@ class WanAnimate:
                     runtime_stats["seam_summary"]["boundary_after"]["mean"] or 0.0,
                     runtime_stats["seam_summary"]["overlap_before"]["mean"] or 0.0,
                     runtime_stats["seam_summary"]["overlap_after_prev"]["mean"] or 0.0,
+                )
+            if runtime_stats["temporal_handoff_summary"]:
+                logging.info(
+                    "Temporal handoff summary: mode=%s applied=%d slots=%.2f base_to_memory=%.4f composed_to_base=%.4f",
+                    temporal_handoff_mode,
+                    runtime_stats["temporal_handoff_summary"]["applied_count"],
+                    runtime_stats["temporal_handoff_summary"]["latent_slots"]["mean"] or 0.0,
+                    runtime_stats["temporal_handoff_summary"]["base_to_memory_mad"]["mean"] or 0.0,
+                    runtime_stats["temporal_handoff_summary"]["composed_to_base_mad"]["mean"] or 0.0,
                 )
         return videos[0] if self.rank == 0 else None

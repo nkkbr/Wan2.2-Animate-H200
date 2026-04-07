@@ -113,6 +113,10 @@ animate 参数搜索汇总脚本见：
 
 - `scripts/eval/summarize_animate_parameter_search.py`
 
+latent temporal handoff 探索检查脚本见：
+
+- `scripts/eval/check_temporal_handoff.py`
+
 ## 7. 后续建议
 
 后续应把外部 benchmark 素材逐步补充到统一 manifest 中，并且每个新增素材都附带：
