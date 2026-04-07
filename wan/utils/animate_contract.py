@@ -10,8 +10,12 @@ PREPROCESS_METADATA_VERSION = 1
 PREPROCESS_STORAGE_FORMAT = "wan_animate_preprocess_v1"
 PREPROCESS_COLOR_SPACE = "rgb"
 PERSON_MASK_SEMANTICS = "person_foreground"
+HARD_FOREGROUND_SEMANTICS = "hard_foreground"
 BACKGROUND_KEEP_MASK_SEMANTICS = "1 - person_foreground"
+BACKGROUND_KEEP_PRIOR_SEMANTICS = "background_keep_prior"
+SOFT_ALPHA_SEMANTICS = "soft_alpha"
 SOFT_BAND_SEMANTICS = "boundary_transition_band"
+BOUNDARY_BAND_SEMANTICS = SOFT_BAND_SEMANTICS
 DEFAULT_REFERT_NUM = 5
 
 
@@ -102,6 +106,7 @@ def build_preprocess_metadata(
     mask_generation: dict | None = None,
     soft_mask_settings: dict | None = None,
     background_settings: dict | None = None,
+    boundary_fusion_settings: dict | None = None,
     reference_settings: dict | None = None,
     runtime_stats: dict | None = None,
     qa_outputs: dict | None = None,
@@ -216,6 +221,7 @@ def build_preprocess_metadata(
             "sam2_mask_generation": mask_generation or {},
             "soft_mask": soft_mask_settings or {},
             "background": background_settings or {},
+            "boundary_fusion": boundary_fusion_settings or {},
             "reference_normalization": reference_settings or {},
         },
         "runtime": runtime_stats or {},
@@ -305,6 +311,26 @@ def validate_preprocess_metadata(metadata: dict, src_root_path: str | Path) -> N
                 src_files["soft_band"].get("mask_semantics") == SOFT_BAND_SEMANTICS,
                 "soft_band artifact semantics mismatch.",
             )
+        if "hard_foreground" in src_files:
+            _require(
+                src_files["hard_foreground"].get("mask_semantics") == HARD_FOREGROUND_SEMANTICS,
+                "hard_foreground artifact semantics mismatch.",
+            )
+        if "soft_alpha" in src_files:
+            _require(
+                src_files["soft_alpha"].get("mask_semantics") == SOFT_ALPHA_SEMANTICS,
+                "soft_alpha artifact semantics mismatch.",
+            )
+        if "boundary_band" in src_files:
+            _require(
+                src_files["boundary_band"].get("mask_semantics") == BOUNDARY_BAND_SEMANTICS,
+                "boundary_band artifact semantics mismatch.",
+            )
+        if "background_keep_prior" in src_files:
+            _require(
+                src_files["background_keep_prior"].get("mask_semantics") == BACKGROUND_KEEP_PRIOR_SEMANTICS,
+                "background_keep_prior artifact semantics mismatch.",
+            )
 
     root = Path(src_root_path)
     for name, artifact in src_files.items():
@@ -349,7 +375,18 @@ def resolve_preprocess_artifacts(
             "format": artifact.get("format"),
         }
         for name, artifact in metadata["src_files"].items()
-        if name in {"pose", "face", "reference", "background", "person_mask", "soft_band"}
+        if name in {
+            "pose",
+            "face",
+            "reference",
+            "background",
+            "person_mask",
+            "soft_band",
+            "hard_foreground",
+            "soft_alpha",
+            "boundary_band",
+            "background_keep_prior",
+        }
     }
     return artifacts, metadata
 
@@ -363,6 +400,10 @@ def validate_loaded_preprocess_bundle(
     bg_images: np.ndarray | None = None,
     person_mask_images: np.ndarray | None = None,
     soft_band_images: np.ndarray | None = None,
+    hard_foreground_images: np.ndarray | None = None,
+    soft_alpha_images: np.ndarray | None = None,
+    boundary_band_images: np.ndarray | None = None,
+    background_keep_prior_images: np.ndarray | None = None,
 ) -> None:
     validate_rgb_video("conditioning frames", cond_images)
     validate_rgb_video("face frames", face_images)
@@ -392,6 +433,30 @@ def validate_loaded_preprocess_bundle(
                  f"Soft band frame count {soft_band_images.shape[0]} does not match pose frame count {frame_count}.")
         _require(soft_band_images.shape[1:3] == (cond_height, cond_width),
                  "Soft band size must match pose video size.")
+    if hard_foreground_images is not None:
+        validate_person_mask_frames("hard foreground frames", hard_foreground_images)
+        _require(hard_foreground_images.shape[0] == frame_count,
+                 f"Hard foreground frame count {hard_foreground_images.shape[0]} does not match pose frame count {frame_count}.")
+        _require(hard_foreground_images.shape[1:3] == (cond_height, cond_width),
+                 "Hard foreground size must match pose video size.")
+    if soft_alpha_images is not None:
+        validate_person_mask_frames("soft alpha frames", soft_alpha_images)
+        _require(soft_alpha_images.shape[0] == frame_count,
+                 f"Soft alpha frame count {soft_alpha_images.shape[0]} does not match pose frame count {frame_count}.")
+        _require(soft_alpha_images.shape[1:3] == (cond_height, cond_width),
+                 "Soft alpha size must match pose video size.")
+    if boundary_band_images is not None:
+        validate_person_mask_frames("boundary band frames", boundary_band_images)
+        _require(boundary_band_images.shape[0] == frame_count,
+                 f"Boundary band frame count {boundary_band_images.shape[0]} does not match pose frame count {frame_count}.")
+        _require(boundary_band_images.shape[1:3] == (cond_height, cond_width),
+                 "Boundary band size must match pose video size.")
+    if background_keep_prior_images is not None:
+        validate_person_mask_frames("background keep prior frames", background_keep_prior_images)
+        _require(background_keep_prior_images.shape[0] == frame_count,
+                 f"Background keep prior frame count {background_keep_prior_images.shape[0]} does not match pose frame count {frame_count}.")
+        _require(background_keep_prior_images.shape[1:3] == (cond_height, cond_width),
+                 "Background keep prior size must match pose video size.")
 
     if metadata is None:
         return
@@ -451,4 +516,62 @@ def validate_loaded_preprocess_bundle(
         _require(
             soft_band_meta.get("mask_semantics") == SOFT_BAND_SEMANTICS,
             "soft_band artifact semantics mismatch.",
+        )
+    if hard_foreground_images is not None:
+        _require("hard_foreground" in metadata["src_files"], "hard_foreground frames were loaded but metadata has no hard_foreground artifact.")
+        hard_foreground_meta = metadata["src_files"]["hard_foreground"]
+        _require(hard_foreground_meta["frame_count"] == hard_foreground_images.shape[0], "hard_foreground artifact frame_count mismatch.")
+        _require(
+            hard_foreground_meta["height"] == hard_foreground_images.shape[1]
+            and hard_foreground_meta["width"] == hard_foreground_images.shape[2],
+            "hard_foreground artifact size mismatch.",
+        )
+        _require(
+            hard_foreground_meta.get("mask_semantics") == HARD_FOREGROUND_SEMANTICS,
+            "hard_foreground artifact semantics mismatch.",
+        )
+    if soft_alpha_images is not None:
+        _require("soft_alpha" in metadata["src_files"], "soft_alpha frames were loaded but metadata has no soft_alpha artifact.")
+        soft_alpha_meta = metadata["src_files"]["soft_alpha"]
+        _require(soft_alpha_meta["frame_count"] == soft_alpha_images.shape[0], "soft_alpha artifact frame_count mismatch.")
+        _require(
+            soft_alpha_meta["height"] == soft_alpha_images.shape[1]
+            and soft_alpha_meta["width"] == soft_alpha_images.shape[2],
+            "soft_alpha artifact size mismatch.",
+        )
+        _require(
+            soft_alpha_meta.get("mask_semantics") == SOFT_ALPHA_SEMANTICS,
+            "soft_alpha artifact semantics mismatch.",
+        )
+    if boundary_band_images is not None:
+        _require("boundary_band" in metadata["src_files"], "boundary_band frames were loaded but metadata has no boundary_band artifact.")
+        boundary_band_meta = metadata["src_files"]["boundary_band"]
+        _require(boundary_band_meta["frame_count"] == boundary_band_images.shape[0], "boundary_band artifact frame_count mismatch.")
+        _require(
+            boundary_band_meta["height"] == boundary_band_images.shape[1]
+            and boundary_band_meta["width"] == boundary_band_images.shape[2],
+            "boundary_band artifact size mismatch.",
+        )
+        _require(
+            boundary_band_meta.get("mask_semantics") == BOUNDARY_BAND_SEMANTICS,
+            "boundary_band artifact semantics mismatch.",
+        )
+    if background_keep_prior_images is not None:
+        _require(
+            "background_keep_prior" in metadata["src_files"],
+            "background_keep_prior frames were loaded but metadata has no background_keep_prior artifact.",
+        )
+        background_keep_meta = metadata["src_files"]["background_keep_prior"]
+        _require(
+            background_keep_meta["frame_count"] == background_keep_prior_images.shape[0],
+            "background_keep_prior artifact frame_count mismatch.",
+        )
+        _require(
+            background_keep_meta["height"] == background_keep_prior_images.shape[1]
+            and background_keep_meta["width"] == background_keep_prior_images.shape[2],
+            "background_keep_prior artifact size mismatch.",
+        )
+        _require(
+            background_keep_meta.get("mask_semantics") == BACKGROUND_KEEP_PRIOR_SEMANTICS,
+            "background_keep_prior artifact semantics mismatch.",
         )

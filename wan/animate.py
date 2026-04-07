@@ -33,7 +33,11 @@ from .utils.fm_solvers import (
 from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from .utils.animate_contract import (
     BACKGROUND_KEEP_MASK_SEMANTICS,
+    BACKGROUND_KEEP_PRIOR_SEMANTICS,
+    BOUNDARY_BAND_SEMANTICS,
+    HARD_FOREGROUND_SEMANTICS,
     PERSON_MASK_SEMANTICS,
+    SOFT_ALPHA_SEMANTICS,
     load_image_rgb,
     read_video_rgb,
     resolve_preprocess_artifacts,
@@ -415,8 +419,12 @@ class WanAnimate:
             background_frames=background_frames,
             person_mask=replacement_masks["person_mask"][:real_frame_len].cpu().numpy(),
             soft_band=(
-                replacement_masks["soft_band"][:real_frame_len].cpu().numpy()
-                if replacement_masks["soft_band"] is not None else None
+                replacement_masks["boundary_band"][:real_frame_len].cpu().numpy()
+                if replacement_masks["boundary_band"] is not None else None
+            ),
+            soft_alpha=(
+                replacement_masks["soft_alpha"][:real_frame_len].cpu().numpy()
+                if replacement_masks["soft_alpha"] is not None else None
             ),
             strength=boundary_refine_strength,
             sharpen=boundary_refine_sharpen,
@@ -447,6 +455,10 @@ class WanAnimate:
         *,
         person_mask_images,
         soft_band_images,
+        hard_foreground_images,
+        soft_alpha_images,
+        boundary_band_images,
+        background_keep_prior_images,
         lat_h,
         lat_w,
         mask_mode,
@@ -456,12 +468,29 @@ class WanAnimate:
         transition_high,
     ):
         person_mask = torch.as_tensor(np.asarray(person_mask_images), dtype=torch.float32)
-        soft_band = None
-        if soft_band_images is not None:
-            soft_band = torch.as_tensor(np.asarray(soft_band_images), dtype=torch.float32)
+        hard_foreground = (
+            torch.as_tensor(np.asarray(hard_foreground_images), dtype=torch.float32)
+            if hard_foreground_images is not None else person_mask
+        )
+        boundary_band = (
+            torch.as_tensor(np.asarray(boundary_band_images), dtype=torch.float32)
+            if boundary_band_images is not None else None
+        )
+        if boundary_band is None and soft_band_images is not None:
+            boundary_band = torch.as_tensor(np.asarray(soft_band_images), dtype=torch.float32)
+        soft_alpha = (
+            torch.as_tensor(np.asarray(soft_alpha_images), dtype=torch.float32)
+            if soft_alpha_images is not None else None
+        )
+        background_keep_prior = (
+            torch.as_tensor(np.asarray(background_keep_prior_images), dtype=torch.float32)
+            if background_keep_prior_images is not None else None
+        )
         background_keep = compose_background_keep_mask(
-            person_mask,
-            soft_band=soft_band,
+            hard_foreground,
+            soft_band=boundary_band,
+            soft_alpha=soft_alpha,
+            background_keep_prior=background_keep_prior,
             mode=mask_mode,
             boundary_strength=boundary_strength,
         )
@@ -471,9 +500,16 @@ class WanAnimate:
             mode=downsample_mode,
         )
         soft_band_latent = None
-        if soft_band is not None:
+        if boundary_band is not None:
             soft_band_latent = resize_mask_volume(
-                soft_band,
+                boundary_band,
+                output_size=(lat_h, lat_w),
+                mode=downsample_mode,
+            )
+        soft_alpha_latent = None
+        if soft_alpha is not None:
+            soft_alpha_latent = resize_mask_volume(
+                soft_alpha,
                 output_size=(lat_h, lat_w),
                 mode=downsample_mode,
             )
@@ -488,11 +524,16 @@ class WanAnimate:
             transition_high=transition_high,
         )
         return {
-            "person_mask": person_mask,
-            "soft_band": soft_band,
+            "person_mask": hard_foreground,
+            "hard_foreground": hard_foreground,
+            "soft_band": boundary_band,
+            "boundary_band": boundary_band,
+            "soft_alpha": soft_alpha,
+            "background_keep_prior": background_keep_prior,
             "background_keep": background_keep,
             "background_keep_latent": background_keep_latent,
             "soft_band_latent": soft_band_latent,
+            "soft_alpha_latent": soft_alpha_latent,
             "pixel_regions": pixel_regions,
             "latent_regions": latent_regions,
         }
@@ -512,6 +553,7 @@ class WanAnimate:
         artifacts = {}
         mask_artifacts = {
             "person_mask_hard": replacement_masks["person_mask"][:real_frame_len].cpu().numpy(),
+            "hard_foreground": replacement_masks["hard_foreground"][:real_frame_len].cpu().numpy(),
             "background_keep_mask": replacement_masks["background_keep"][:real_frame_len].cpu().numpy(),
             "transition_band": replacement_masks["pixel_regions"]["transition_band"][:real_frame_len].cpu().numpy(),
             "free_replacement_region": replacement_masks["pixel_regions"]["free_replacement"][:real_frame_len].cpu().numpy(),
@@ -521,8 +563,15 @@ class WanAnimate:
         }
         if replacement_masks["soft_band"] is not None:
             mask_artifacts["soft_band"] = replacement_masks["soft_band"][:real_frame_len].cpu().numpy()
+            mask_artifacts["boundary_band"] = replacement_masks["soft_band"][:real_frame_len].cpu().numpy()
+        if replacement_masks["soft_alpha"] is not None:
+            mask_artifacts["soft_alpha"] = replacement_masks["soft_alpha"][:real_frame_len].cpu().numpy()
+        if replacement_masks["background_keep_prior"] is not None:
+            mask_artifacts["background_keep_prior"] = replacement_masks["background_keep_prior"][:real_frame_len].cpu().numpy()
         if replacement_masks["soft_band_latent"] is not None:
             mask_artifacts["latent_soft_band"] = replacement_masks["soft_band_latent"][:real_frame_len].cpu().numpy()
+        if replacement_masks["soft_alpha_latent"] is not None:
+            mask_artifacts["latent_soft_alpha"] = replacement_masks["soft_alpha_latent"][:real_frame_len].cpu().numpy()
 
         for stem, mask_frames in mask_artifacts.items():
             artifact = write_person_mask_artifact(
@@ -852,14 +901,29 @@ class WanAnimate:
         face_images = self.inputs_padding(face_images, target_len)
         
         soft_band_images = None
+        hard_foreground_images = None
+        soft_alpha_images = None
+        boundary_band_images = None
+        background_keep_prior_images = None
         bg_images = None
         if replace_flag:
             bg_images, person_mask_images = self.prepare_source_for_replace(
                 src_bg_artifact=artifacts["background"],
                 src_mask_artifact=artifacts["person_mask"],
             )
+            if "hard_foreground" in artifacts:
+                hard_foreground_images = load_mask_artifact(artifacts["hard_foreground"]["path"], artifacts["hard_foreground"].get("format"))
             if "soft_band" in artifacts:
                 soft_band_images = load_mask_artifact(artifacts["soft_band"]["path"], artifacts["soft_band"].get("format"))
+            if "boundary_band" in artifacts:
+                boundary_band_images = load_mask_artifact(artifacts["boundary_band"]["path"], artifacts["boundary_band"].get("format"))
+            if "soft_alpha" in artifacts:
+                soft_alpha_images = load_mask_artifact(artifacts["soft_alpha"]["path"], artifacts["soft_alpha"].get("format"))
+            if "background_keep_prior" in artifacts:
+                background_keep_prior_images = load_mask_artifact(
+                    artifacts["background_keep_prior"]["path"],
+                    artifacts["background_keep_prior"].get("format"),
+                )
             validate_loaded_preprocess_bundle(
                 cond_images=np.asarray(cond_images[:real_frame_len]),
                 face_images=np.asarray(face_images[:real_frame_len]),
@@ -868,11 +932,23 @@ class WanAnimate:
                 bg_images=bg_images,
                 person_mask_images=person_mask_images,
                 soft_band_images=soft_band_images,
+                hard_foreground_images=hard_foreground_images,
+                soft_alpha_images=soft_alpha_images,
+                boundary_band_images=boundary_band_images,
+                background_keep_prior_images=background_keep_prior_images,
             )
             bg_images = self.inputs_padding(bg_images, target_len)
             person_mask_images = self.inputs_padding(person_mask_images, target_len)
+            if hard_foreground_images is not None:
+                hard_foreground_images = self.inputs_padding(hard_foreground_images, target_len)
             if soft_band_images is not None:
                 soft_band_images = self.inputs_padding(soft_band_images, target_len)
+            if boundary_band_images is not None:
+                boundary_band_images = self.inputs_padding(boundary_band_images, target_len)
+            if soft_alpha_images is not None:
+                soft_alpha_images = self.inputs_padding(soft_alpha_images, target_len)
+            if background_keep_prior_images is not None:
+                background_keep_prior_images = self.inputs_padding(background_keep_prior_images, target_len)
         else:
             validate_loaded_preprocess_bundle(
                 cond_images=np.asarray(cond_images[:real_frame_len]),
@@ -892,15 +968,21 @@ class WanAnimate:
         replacement_masks = None
         replacement_mask_debug = {}
         if replace_flag:
-            if soft_band_images is None and replacement_mask_mode != "hard":
+            if soft_band_images is None and boundary_band_images is None and replacement_mask_mode != "hard":
                 logging.warning(
-                    "replacement_mask_mode=%s requested, but preprocess bundle has no soft_band artifact. Falling back to hard mask.",
+                    "replacement_mask_mode=%s requested, but preprocess bundle has no soft boundary artifact. Falling back to hard mask.",
                     replacement_mask_mode,
                 )
                 replacement_mask_mode = "hard"
             replacement_masks = self._prepare_replacement_masks(
                 person_mask_images=np.asarray(person_mask_images),
                 soft_band_images=np.asarray(soft_band_images) if soft_band_images is not None else None,
+                hard_foreground_images=np.asarray(hard_foreground_images) if hard_foreground_images is not None else None,
+                soft_alpha_images=np.asarray(soft_alpha_images) if soft_alpha_images is not None else None,
+                boundary_band_images=np.asarray(boundary_band_images) if boundary_band_images is not None else None,
+                background_keep_prior_images=(
+                    np.asarray(background_keep_prior_images) if background_keep_prior_images is not None else None
+                ),
                 lat_h=lat_h,
                 lat_w=lat_w,
                 mask_mode=replacement_mask_mode,
@@ -965,6 +1047,10 @@ class WanAnimate:
             ),
             "reference_artifact_path": artifacts["reference"]["path"],
             "soft_band_available": bool(soft_band_images is not None) if replace_flag else False,
+            "hard_foreground_available": bool(hard_foreground_images is not None) if replace_flag else False,
+            "soft_alpha_available": bool(soft_alpha_images is not None) if replace_flag else False,
+            "boundary_band_available": bool(boundary_band_images is not None) if replace_flag else False,
+            "background_keep_prior_available": bool(background_keep_prior_images is not None) if replace_flag else False,
             "text_condition_encode_sec": text_condition_encode_sec,
             "reference_condition_encode_sec": reference_condition_encode_sec,
             "static_condition_encode_sec": static_condition_encode_sec,

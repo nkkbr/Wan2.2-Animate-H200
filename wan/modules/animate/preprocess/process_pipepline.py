@@ -37,10 +37,21 @@ from sam_runtime import (
     write_chunk_trace,
 )
 from sam_utils import build_sam2_video_predictor
-from wan.utils.animate_contract import SOFT_BAND_SEMANTICS, load_image_rgb, validate_rgb_video
+from wan.utils.animate_contract import (
+    BACKGROUND_KEEP_PRIOR_SEMANTICS,
+    BOUNDARY_BAND_SEMANTICS,
+    HARD_FOREGROUND_SEMANTICS,
+    SOFT_ALPHA_SEMANTICS,
+    SOFT_BAND_SEMANTICS,
+    load_image_rgb,
+    validate_rgb_video,
+)
 from wan.utils.media_io import write_person_mask_artifact, write_rgb_artifact
 from wan.utils.replacement_masks import build_soft_boundary_band
+from boundary_fusion import fuse_boundary_signals, make_fused_boundary_preview
 from background_clean_plate import build_clean_plate_background
+from matting_adapter import make_matting_alpha_preview, run_matting_adapter
+from parsing_adapter import make_parsing_overlay, run_parsing_adapter
 from reference_normalization import (
     bbox_from_pose_meta,
     estimate_driver_target_bbox,
@@ -144,6 +155,15 @@ class ProcessPipeline():
         soft_mask_mode="soft_band",
         soft_mask_band_width=24,
         soft_mask_blur_kernel=5,
+        boundary_fusion_mode="heuristic",
+        parsing_mode="heuristic",
+        matting_mode="heuristic",
+        parsing_head_expand=1.2,
+        parsing_hand_radius_ratio=0.025,
+        parsing_boundary_kernel=11,
+        matting_trimap_inner_erode=3,
+        matting_trimap_outer_dilate=12,
+        matting_blur_kernel=5,
         bg_inpaint_mode="none",
         bg_inpaint_method="telea",
         bg_inpaint_mask_expand=16,
@@ -449,12 +469,51 @@ class ProcessPipeline():
                     band_width=soft_mask_band_width,
                     blur_kernel_size=soft_mask_blur_kernel,
                 ).astype(np.float32)
+            parsing_start = time.perf_counter()
+            parsing_output = run_parsing_adapter(
+                frames=np.stack(export_frames).astype(np.uint8),
+                hard_mask=aug_masks,
+                pose_metas=tpl_pose_metas,
+                face_bboxes=face_bboxes,
+                mode=parsing_mode,
+                face_conf_thresh=face_conf_thresh,
+                hand_conf_thresh=sam_prompt_hand_conf_thresh,
+                head_expand=parsing_head_expand,
+                hand_radius_ratio=parsing_hand_radius_ratio,
+                boundary_kernel=parsing_boundary_kernel,
+            )
+            runtime_stage_seconds["parsing_adapter"] = time.perf_counter() - parsing_start
+            matting_start = time.perf_counter()
+            matting_output = run_matting_adapter(
+                frames=np.stack(export_frames).astype(np.uint8),
+                hard_mask=aug_masks,
+                soft_band=soft_band_masks,
+                parsing_boundary_prior=parsing_output["semantic_boundary_prior"],
+                mode=matting_mode,
+                trimap_inner_erode=matting_trimap_inner_erode,
+                trimap_outer_dilate=matting_trimap_outer_dilate,
+                blur_kernel=matting_blur_kernel,
+            )
+            runtime_stage_seconds["matting_adapter"] = time.perf_counter() - matting_start
+            fusion_start = time.perf_counter()
+            boundary_fusion = fuse_boundary_signals(
+                hard_mask=aug_masks,
+                soft_band=soft_band_masks,
+                parsing_output=parsing_output,
+                matting_output=matting_output,
+                mode=boundary_fusion_mode,
+            )
+            runtime_stage_seconds["boundary_fusion"] = time.perf_counter() - fusion_start
+            hard_foreground_masks = boundary_fusion["hard_foreground"].astype(np.float32)
+            soft_alpha_masks = boundary_fusion["soft_alpha"].astype(np.float32)
+            boundary_band_masks = boundary_fusion["boundary_band"].astype(np.float32)
+            background_keep_prior_masks = boundary_fusion["background_keep_prior"].astype(np.float32)
             background_start = time.perf_counter()
             bg_images, background_debug = build_clean_plate_background(
                 np.stack(export_frames).astype(np.uint8),
-                aug_masks,
+                hard_foreground_masks,
                 bg_inpaint_mode=bg_inpaint_mode,
-                soft_band=soft_band_masks,
+                soft_band=boundary_band_masks,
                 bg_inpaint_mask_expand=bg_inpaint_mask_expand,
                 bg_inpaint_radius=bg_inpaint_radius,
                 bg_inpaint_method=bg_inpaint_method,
@@ -521,6 +580,69 @@ class ProcessPipeline():
                         mask_semantics=SOFT_BAND_SEMANTICS,
                     )
                     qa_outputs["soft_band_overlay"] = qa_soft_band_overlay["path"]
+                parsing_overlay = make_parsing_overlay(np.stack(export_frames).astype(np.uint8), parsing_output)
+                qa_parsing_overlay = write_rgb_artifact(
+                    frames=parsing_overlay,
+                    output_root=output_path,
+                    stem="parsing_overlay",
+                    artifact_format="mp4",
+                    fps=fps,
+                )
+                qa_matting_alpha = write_rgb_artifact(
+                    frames=make_matting_alpha_preview(soft_alpha_masks),
+                    output_root=output_path,
+                    stem="matting_alpha_preview",
+                    artifact_format="mp4",
+                    fps=fps,
+                )
+                qa_fused_boundary = write_rgb_artifact(
+                    frames=make_fused_boundary_preview(np.stack(export_frames).astype(np.uint8), boundary_fusion),
+                    output_root=output_path,
+                    stem="fused_boundary_preview",
+                    artifact_format="mp4",
+                    fps=fps,
+                )
+                qa_hard_foreground = write_person_mask_artifact(
+                    mask_frames=hard_foreground_masks,
+                    output_root=output_path,
+                    stem="hard_foreground_overlay",
+                    artifact_format="mp4",
+                    fps=fps,
+                    mask_semantics=HARD_FOREGROUND_SEMANTICS,
+                )
+                qa_soft_alpha = write_person_mask_artifact(
+                    mask_frames=soft_alpha_masks,
+                    output_root=output_path,
+                    stem="soft_alpha_overlay",
+                    artifact_format="mp4",
+                    fps=fps,
+                    mask_semantics=SOFT_ALPHA_SEMANTICS,
+                )
+                qa_boundary_band = write_person_mask_artifact(
+                    mask_frames=boundary_band_masks,
+                    output_root=output_path,
+                    stem="boundary_band_overlay",
+                    artifact_format="mp4",
+                    fps=fps,
+                    mask_semantics=BOUNDARY_BAND_SEMANTICS,
+                )
+                qa_background_prior = write_person_mask_artifact(
+                    mask_frames=background_keep_prior_masks,
+                    output_root=output_path,
+                    stem="background_keep_prior_overlay",
+                    artifact_format="mp4",
+                    fps=fps,
+                    mask_semantics=BACKGROUND_KEEP_PRIOR_SEMANTICS,
+                )
+                qa_outputs.update({
+                    "parsing_overlay": qa_parsing_overlay["path"],
+                    "matting_alpha_preview": qa_matting_alpha["path"],
+                    "fused_boundary_preview": qa_fused_boundary["path"],
+                    "hard_foreground_overlay": qa_hard_foreground["path"],
+                    "soft_alpha_overlay": qa_soft_alpha["path"],
+                    "boundary_band_overlay": qa_boundary_band["path"],
+                    "background_keep_prior_overlay": qa_background_prior["path"],
+                })
                 qa_background_hole = write_rgb_artifact(
                     frames=background_debug["hole_background"].astype(np.uint8),
                     output_root=output_path,
@@ -600,7 +722,7 @@ class ProcessPipeline():
                     fps=fps,
                 ),
                 "person_mask": write_person_mask_artifact(
-                    mask_frames=aug_masks,
+                    mask_frames=hard_foreground_masks,
                     output_root=output_path,
                     stem="src_mask",
                     artifact_format=self._artifact_format(save_format, lossless_intermediate, "person_mask", is_mask=True),
@@ -619,6 +741,10 @@ class ProcessPipeline():
                     "resized_height": int(height),
                     "resized_width": int(width),
                 },
+            }
+            src_files["hard_foreground"] = {
+                **src_files["person_mask"],
+                "mask_semantics": HARD_FOREGROUND_SEMANTICS,
             }
             if active_reference_path != "src_ref.png":
                 src_files["reference_original"] = {
@@ -643,6 +769,30 @@ class ProcessPipeline():
                     fps=fps,
                     mask_semantics=SOFT_BAND_SEMANTICS,
                 )
+            src_files["boundary_band"] = write_person_mask_artifact(
+                mask_frames=boundary_band_masks,
+                output_root=output_path,
+                stem="src_boundary_band",
+                artifact_format=self._artifact_format(save_format, lossless_intermediate, "boundary_band", is_mask=True),
+                fps=fps,
+                mask_semantics=BOUNDARY_BAND_SEMANTICS,
+            )
+            src_files["soft_alpha"] = write_person_mask_artifact(
+                mask_frames=soft_alpha_masks,
+                output_root=output_path,
+                stem="src_soft_alpha",
+                artifact_format=self._artifact_format(save_format, lossless_intermediate, "soft_alpha", is_mask=True),
+                fps=fps,
+                mask_semantics=SOFT_ALPHA_SEMANTICS,
+            )
+            src_files["background_keep_prior"] = write_person_mask_artifact(
+                mask_frames=background_keep_prior_masks,
+                output_root=output_path,
+                stem="src_background_keep_prior",
+                artifact_format=self._artifact_format(save_format, lossless_intermediate, "background_keep_prior", is_mask=True),
+                fps=fps,
+                mask_semantics=BACKGROUND_KEEP_PRIOR_SEMANTICS,
+            )
             src_files["background"]["background_mode"] = background_debug["background_mode"]
             runtime_stage_seconds["write_outputs"] = time.perf_counter() - write_start
             runtime_stage_seconds["total"] = time.perf_counter() - overall_start
@@ -667,6 +817,14 @@ class ProcessPipeline():
                 "reference_width": int(reference_width),
                 "src_files": src_files,
                 "reference_normalization": reference_normalization,
+                "boundary_fusion": {
+                    "mode": boundary_fusion_mode,
+                    "parsing_mode": parsing_output["mode"],
+                    "matting_mode": matting_output["mode"],
+                    "parsing_stats": parsing_output["stats"],
+                    "matting_stats": matting_output["stats"],
+                    "fusion_stats": boundary_fusion["stats"],
+                },
                 "sam_runtime": dict(self.sam_runtime_config),
                 "sam_apply_postprocessing": bool(self.sam_apply_postprocessing),
                 "sam_trace_dir": str(trace_dir) if trace_dir is not None else None,

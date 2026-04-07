@@ -370,6 +370,63 @@ def _parse_args():
         help="Optional odd kernel size used to smooth the soft boundary band. Set to 0 to disable."
     )
     parser.add_argument(
+        "--boundary_fusion_mode",
+        type=str,
+        default="heuristic",
+        choices=["none", "heuristic"],
+        help="Boundary fusion mode. 'heuristic' fuses SAM2, parsing-style priors, and matting-style alpha into richer boundary artifacts."
+    )
+    parser.add_argument(
+        "--parsing_mode",
+        type=str,
+        default="heuristic",
+        choices=["none", "heuristic"],
+        help="Parsing adapter mode used to derive semantic boundary priors."
+    )
+    parser.add_argument(
+        "--matting_mode",
+        type=str,
+        default="heuristic",
+        choices=["none", "heuristic"],
+        help="Matting adapter mode used to derive soft alpha."
+    )
+    parser.add_argument(
+        "--parsing_head_expand",
+        type=float,
+        default=1.2,
+        help="Expansion factor for the parsing adapter's head prior derived from the face region."
+    )
+    parser.add_argument(
+        "--parsing_hand_radius_ratio",
+        type=float,
+        default=0.025,
+        help="Normalized radius used to rasterize hand priors in the parsing adapter."
+    )
+    parser.add_argument(
+        "--parsing_boundary_kernel",
+        type=int,
+        default=11,
+        help="Kernel size used to define the heuristic parsing boundary ring."
+    )
+    parser.add_argument(
+        "--matting_trimap_inner_erode",
+        type=int,
+        default=3,
+        help="Inner erosion radius for the heuristic matting trimap."
+    )
+    parser.add_argument(
+        "--matting_trimap_outer_dilate",
+        type=int,
+        default=12,
+        help="Outer dilation radius for the heuristic matting trimap."
+    )
+    parser.add_argument(
+        "--matting_blur_kernel",
+        type=int,
+        default=5,
+        help="Blur kernel applied to the heuristic soft alpha."
+    )
+    parser.add_argument(
         "--bg_inpaint_mode",
         type=str,
         default="none",
@@ -611,6 +668,15 @@ if __name__ == '__main__':
                                             soft_mask_mode=args.soft_mask_mode,
                                             soft_mask_band_width=args.soft_mask_band_width,
                                             soft_mask_blur_kernel=args.soft_mask_blur_kernel,
+                                            boundary_fusion_mode=args.boundary_fusion_mode,
+                                            parsing_mode=args.parsing_mode,
+                                            matting_mode=args.matting_mode,
+                                            parsing_head_expand=args.parsing_head_expand,
+                                            parsing_hand_radius_ratio=args.parsing_hand_radius_ratio,
+                                            parsing_boundary_kernel=args.parsing_boundary_kernel,
+                                            matting_trimap_inner_erode=args.matting_trimap_inner_erode,
+                                            matting_trimap_outer_dilate=args.matting_trimap_outer_dilate,
+                                            matting_blur_kernel=args.matting_blur_kernel,
                                             bg_inpaint_mode=args.bg_inpaint_mode,
                                             bg_inpaint_method=args.bg_inpaint_method,
                                             bg_inpaint_mask_expand=args.bg_inpaint_mask_expand,
@@ -718,6 +784,18 @@ if __name__ == '__main__':
                 "bg_inpaint_mask_expand": args.bg_inpaint_mask_expand,
                 "bg_inpaint_radius": args.bg_inpaint_radius,
                 "bg_temporal_smooth_strength": args.bg_temporal_smooth_strength,
+            },
+            boundary_fusion_settings={
+                "boundary_fusion_mode": args.boundary_fusion_mode,
+                "parsing_mode": args.parsing_mode,
+                "matting_mode": args.matting_mode,
+                "parsing_head_expand": args.parsing_head_expand,
+                "parsing_hand_radius_ratio": args.parsing_hand_radius_ratio,
+                "parsing_boundary_kernel": args.parsing_boundary_kernel,
+                "matting_trimap_inner_erode": args.matting_trimap_inner_erode,
+                "matting_trimap_outer_dilate": args.matting_trimap_outer_dilate,
+                "matting_blur_kernel": args.matting_blur_kernel,
+                "stats": pipeline_outputs.get("boundary_fusion", {}),
             },
             reference_settings={
                 "reference_normalization_mode": args.reference_normalization_mode,

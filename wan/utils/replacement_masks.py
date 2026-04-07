@@ -36,6 +36,8 @@ def compose_background_keep_mask(
     person_mask: torch.Tensor | np.ndarray,
     soft_band: torch.Tensor | np.ndarray | None = None,
     *,
+    soft_alpha: torch.Tensor | np.ndarray | None = None,
+    background_keep_prior: torch.Tensor | np.ndarray | None = None,
     mode: str = "soft_band",
     boundary_strength: float = 0.5,
 ) -> torch.Tensor:
@@ -43,10 +45,21 @@ def compose_background_keep_mask(
         person_mask = torch.as_tensor(person_mask, dtype=torch.float32)
     person_mask = person_mask.to(dtype=torch.float32)
     background_keep = 1.0 - torch.clamp(person_mask, 0.0, 1.0)
-    if mode == "hard" or soft_band is None:
+    if mode == "hard":
         return torch.clamp(background_keep, 0.0, 1.0)
+    if background_keep_prior is not None:
+        if not isinstance(background_keep_prior, torch.Tensor):
+            background_keep_prior = torch.as_tensor(background_keep_prior, dtype=torch.float32)
+        return torch.clamp(background_keep_prior.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
     if mode != "soft_band":
         raise ValueError(f"Unsupported replacement mask mode: {mode}")
+    if soft_alpha is not None:
+        if not isinstance(soft_alpha, torch.Tensor):
+            soft_alpha = torch.as_tensor(soft_alpha, dtype=torch.float32)
+        soft_alpha = torch.clamp(soft_alpha.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
+        background_keep = torch.maximum(background_keep, 1.0 - soft_alpha)
+    if soft_band is None:
+        return torch.clamp(background_keep, 0.0, 1.0)
     if not isinstance(soft_band, torch.Tensor):
         soft_band = torch.as_tensor(soft_band, dtype=torch.float32)
     soft_band = soft_band.to(dtype=torch.float32, device=background_keep.device)

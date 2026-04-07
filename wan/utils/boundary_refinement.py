@@ -130,6 +130,7 @@ def refine_boundary_frames(
     background_frames: np.ndarray,
     person_mask: np.ndarray,
     soft_band: np.ndarray | None = None,
+    soft_alpha: np.ndarray | None = None,
     strength: float = 0.35,
     sharpen: float = 0.15,
     inner_width: int = 2,
@@ -139,6 +140,7 @@ def refine_boundary_frames(
     background_frames = np.asarray(background_frames, dtype=np.uint8)
     person_mask = np.asarray(person_mask, dtype=np.float32)
     soft_band = np.zeros_like(person_mask, dtype=np.float32) if soft_band is None else np.asarray(soft_band, dtype=np.float32)
+    soft_alpha = None if soft_alpha is None else np.asarray(soft_alpha, dtype=np.float32)
 
     if generated_frames.shape != background_frames.shape:
         raise ValueError(f"Generated and background frames must match. Got {generated_frames.shape} vs {background_frames.shape}.")
@@ -146,11 +148,15 @@ def refine_boundary_frames(
         raise ValueError(f"person_mask must match frame shape. Got {person_mask.shape} vs {generated_frames.shape[:3]}.")
     if soft_band.shape != person_mask.shape:
         raise ValueError(f"soft_band must match person_mask shape. Got {soft_band.shape} vs {person_mask.shape}.")
+    if soft_alpha is not None and soft_alpha.shape != person_mask.shape:
+        raise ValueError(f"soft_alpha must match person_mask shape. Got {soft_alpha.shape} vs {person_mask.shape}.")
 
     strength = max(0.0, min(float(strength), 1.0))
     sharpen = max(0.0, min(float(sharpen), 1.0))
     person_mask = np.clip(person_mask, 0.0, 1.0).astype(np.float32)
     outer_band = np.clip(soft_band, 0.0, 1.0).astype(np.float32)
+    if soft_alpha is not None:
+        soft_alpha = np.clip(soft_alpha, 0.0, 1.0).astype(np.float32)
     inner_band = build_inner_boundary_band(person_mask, inner_width=inner_width)
 
     generated = generated_frames.astype(np.float32) / 255.0
@@ -160,7 +166,11 @@ def refine_boundary_frames(
     sharpen_alpha = np.clip(inner_band * sharpen, 0.0, 1.0)[..., None]
     refined = generated * (1.0 - sharpen_alpha) + sharpened * sharpen_alpha
 
-    target_foreground_alpha = np.clip(person_mask + outer_band, 0.0, 1.0)[..., None]
+    target_foreground_alpha = (
+        np.clip(soft_alpha, 0.0, 1.0)[..., None]
+        if soft_alpha is not None
+        else np.clip(person_mask + outer_band, 0.0, 1.0)[..., None]
+    )
     band_blend = np.clip(outer_band * strength, 0.0, 1.0)[..., None]
     composite = refined * target_foreground_alpha + background * (1.0 - target_foreground_alpha)
     refined = refined * (1.0 - band_blend) + composite * band_blend
@@ -177,6 +187,7 @@ def refine_boundary_frames(
     debug = {
         "outer_band": outer_band,
         "inner_band": inner_band,
+        "soft_alpha": target_foreground_alpha[..., 0],
         "sharpen_alpha": sharpen_alpha[..., 0],
         "band_blend": band_blend[..., 0],
         "target_foreground_alpha": target_foreground_alpha[..., 0],
@@ -224,6 +235,7 @@ def write_boundary_refinement_debug_artifacts(
 
     outer_band = np.asarray(debug_data["outer_band"], dtype=np.float32)
     inner_band = np.asarray(debug_data["inner_band"], dtype=np.float32)
+    soft_alpha = np.asarray(debug_data.get("soft_alpha", debug_data["target_foreground_alpha"]), dtype=np.float32)
     sharpen_alpha = np.asarray(debug_data["sharpen_alpha"], dtype=np.float32)
     band_blend = np.asarray(debug_data["band_blend"], dtype=np.float32)
     target_alpha = np.asarray(debug_data["target_foreground_alpha"], dtype=np.float32)
@@ -247,6 +259,7 @@ def write_boundary_refinement_debug_artifacts(
     masks = {
         "outer_band": outer_band,
         "inner_band": inner_band,
+        "soft_alpha": soft_alpha,
         "sharpen_alpha": sharpen_alpha,
         "blend_alpha": band_blend,
         "target_foreground_alpha": target_alpha,

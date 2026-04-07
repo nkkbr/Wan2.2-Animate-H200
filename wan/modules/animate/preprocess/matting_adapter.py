@@ -1,0 +1,139 @@
+import cv2
+import numpy as np
+
+
+def _mean_color(frame: np.ndarray, mask: np.ndarray, fallback: np.ndarray) -> np.ndarray:
+    pixels = frame[mask > 0]
+    if pixels.size == 0:
+        return fallback.astype(np.float32)
+    return pixels.reshape(-1, 3).mean(axis=0).astype(np.float32)
+
+
+def _distance_alpha(frame: np.ndarray, fg_color: np.ndarray, bg_color: np.ndarray) -> np.ndarray:
+    frame_f = frame.astype(np.float32)
+    d_fg = np.linalg.norm(frame_f - fg_color[None, None, :], axis=-1)
+    d_bg = np.linalg.norm(frame_f - bg_color[None, None, :], axis=-1)
+    return np.clip(d_bg / (d_fg + d_bg + 1e-6), 0.0, 1.0).astype(np.float32)
+
+
+def run_matting_adapter(
+    *,
+    frames: np.ndarray,
+    hard_mask: np.ndarray,
+    soft_band: np.ndarray | None = None,
+    parsing_boundary_prior: np.ndarray | None = None,
+    mode: str = "heuristic",
+    trimap_inner_erode: int = 3,
+    trimap_outer_dilate: int = 12,
+    blur_kernel: int = 5,
+    spatial_weight: float = 0.7,
+    color_weight: float = 0.3,
+) -> dict:
+    frames = np.asarray(frames, dtype=np.uint8)
+    hard_mask = np.asarray(hard_mask, dtype=np.float32)
+    if frames.ndim != 4 or frames.shape[-1] != 3:
+        raise ValueError(f"frames must have shape [T, H, W, 3]. Got {frames.shape}.")
+    if hard_mask.shape != frames.shape[:3]:
+        raise ValueError(f"hard_mask must match frames. Got {hard_mask.shape} vs {frames.shape[:3]}.")
+
+    frame_count, height, width = hard_mask.shape
+    zeros = np.zeros((frame_count, height, width), dtype=np.float32)
+    if mode == "none":
+        return {
+            "mode": "none",
+            "soft_alpha": hard_mask.astype(np.float32),
+            "unknown_region": zeros,
+            "support_region": (hard_mask > 0.0).astype(np.float32),
+            "stats": {
+                "soft_alpha_mean": float(hard_mask.mean()),
+                "unknown_region_mean": 0.0,
+            },
+        }
+    if mode != "heuristic":
+        raise ValueError(f"Unsupported matting adapter mode: {mode}")
+
+    if soft_band is None:
+        soft_band = zeros
+    else:
+        soft_band = np.asarray(soft_band, dtype=np.float32)
+    if parsing_boundary_prior is None:
+        parsing_boundary_prior = zeros
+    else:
+        parsing_boundary_prior = np.asarray(parsing_boundary_prior, dtype=np.float32)
+
+    erode_kernel = max(1, int(trimap_inner_erode))
+    dilate_kernel = max(1, int(trimap_outer_dilate))
+    blur_kernel = max(1, int(blur_kernel))
+    if blur_kernel % 2 == 0:
+        blur_kernel += 1
+    erode_element = np.ones((erode_kernel * 2 + 1, erode_kernel * 2 + 1), dtype=np.uint8)
+    dilate_element = np.ones((dilate_kernel * 2 + 1, dilate_kernel * 2 + 1), dtype=np.uint8)
+
+    soft_alpha_frames = []
+    unknown_region_frames = []
+    support_region_frames = []
+    spatial_weight = float(np.clip(spatial_weight, 0.0, 1.0))
+    color_weight = float(np.clip(color_weight, 0.0, 1.0))
+    total_weight = max(spatial_weight + color_weight, 1e-6)
+    spatial_weight /= total_weight
+    color_weight /= total_weight
+
+    for frame, mask, band, parsing_prior in zip(frames, hard_mask, soft_band, parsing_boundary_prior):
+        hard = (mask > 0.5).astype(np.uint8)
+        sure_fg = cv2.erode(hard, erode_element, iterations=1)
+        support = cv2.dilate(hard, dilate_element, iterations=1).astype(np.float32)
+        support = np.maximum(support, np.clip(band + parsing_prior, 0.0, 1.0))
+        sure_bg = (support < 0.5).astype(np.uint8)
+        unknown = np.clip(1 - sure_fg - sure_bg, 0, 1).astype(np.uint8)
+
+        inside_dist = cv2.distanceTransform(hard, cv2.DIST_L2, 5)
+        outside_dist = cv2.distanceTransform(1 - hard, cv2.DIST_L2, 5)
+        spatial_alpha = inside_dist / (inside_dist + outside_dist + 1e-6)
+
+        fg_color = _mean_color(frame, sure_fg, fallback=np.array([192.0, 160.0, 144.0], dtype=np.float32))
+        bg_color = _mean_color(frame, sure_bg, fallback=frame.reshape(-1, 3).mean(axis=0))
+        color_alpha = _distance_alpha(frame, fg_color, bg_color)
+
+        alpha = np.where(
+            sure_fg > 0,
+            1.0,
+            np.where(
+                sure_bg > 0,
+                0.0,
+                spatial_weight * spatial_alpha + color_weight * color_alpha,
+            ),
+        ).astype(np.float32)
+        alpha = np.maximum(alpha, mask * (1.0 - np.clip(band, 0.0, 1.0) * 0.15))
+        alpha = np.minimum(alpha, np.clip(support, 0.0, 1.0))
+        if blur_kernel > 1:
+            alpha = cv2.GaussianBlur(alpha, (blur_kernel, blur_kernel), sigmaX=0)
+        alpha = np.where(sure_fg > 0, 1.0, alpha)
+        alpha = np.where(sure_bg > 0, 0.0, alpha)
+        alpha = np.clip(alpha, 0.0, 1.0).astype(np.float32)
+
+        soft_alpha_frames.append(alpha)
+        unknown_region_frames.append(unknown.astype(np.float32))
+        support_region_frames.append(np.clip(support, 0.0, 1.0).astype(np.float32))
+
+    soft_alpha_frames = np.stack(soft_alpha_frames).astype(np.float32)
+    unknown_region_frames = np.stack(unknown_region_frames).astype(np.float32)
+    support_region_frames = np.stack(support_region_frames).astype(np.float32)
+    return {
+        "mode": mode,
+        "soft_alpha": soft_alpha_frames,
+        "unknown_region": unknown_region_frames,
+        "support_region": support_region_frames,
+        "stats": {
+            "soft_alpha_mean": float(soft_alpha_frames.mean()),
+            "unknown_region_mean": float(unknown_region_frames.mean()),
+            "support_region_mean": float(support_region_frames.mean()),
+        },
+    }
+
+
+def make_matting_alpha_preview(soft_alpha: np.ndarray) -> np.ndarray:
+    soft_alpha = np.asarray(soft_alpha, dtype=np.float32)
+    if soft_alpha.ndim != 3:
+        raise ValueError(f"soft_alpha must have shape [T, H, W]. Got {soft_alpha.shape}.")
+    preview = np.clip(np.rint(soft_alpha[..., None] * 255.0), 0, 255).astype(np.uint8)
+    return np.repeat(preview, repeats=3, axis=3)
