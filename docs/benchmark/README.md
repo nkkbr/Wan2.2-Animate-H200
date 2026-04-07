@@ -35,6 +35,10 @@
 
 它可以作为 benchmark manifest 的演示 case，但不应成为唯一 benchmark。
 
+系统级验证方案见：
+
+- `docs/benchmark/animate_replacement_system_validation.md`
+
 
 ## 4. benchmark manifest
 
