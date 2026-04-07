@@ -598,7 +598,16 @@ class ProcessPipeline():
             )
             bg_images = np.stack(bg_images).astype(np.uint8)
             runtime_stage_seconds["background_clean_plate"] = time.perf_counter() - background_start
-            qa_outputs = {}
+            diagnostics_start = time.perf_counter()
+            write_curve_json(os.path.join(output_path, "face_bbox_curve.json"), face_bbox_curve)
+            write_curve_json(os.path.join(output_path, "pose_conf_curve.json"), pose_conf_curve)
+            write_mask_json(os.path.join(output_path, "mask_stats.json"), mask_debug["mask_stats"])
+            qa_outputs = {
+                "face_bbox_curve": "face_bbox_curve.json",
+                "pose_conf_curve": "pose_conf_curve.json",
+                "mask_stats": "mask_stats.json",
+            }
+            runtime_stage_seconds["diagnostic_artifacts"] = time.perf_counter() - diagnostics_start
             if export_qa_visuals:
                 qa_start = time.perf_counter()
                 face_bbox_overlay = make_face_bbox_overlay(np.stack(analysis_frames).astype(np.uint8), face_bboxes, face_bbox_curve)
@@ -634,18 +643,13 @@ class ProcessPipeline():
                     fps=fps,
                 )
                 prompt_keyframes = write_prompt_keyframes(output_path, np.stack(analysis_frames).astype(np.uint8), mask_debug["prompt_entries"])
-                write_curve_json(os.path.join(output_path, "face_bbox_curve.json"), face_bbox_curve)
-                write_curve_json(os.path.join(output_path, "pose_conf_curve.json"), pose_conf_curve)
-                write_mask_json(os.path.join(output_path, "mask_stats.json"), mask_debug["mask_stats"])
                 qa_outputs = {
+                    **qa_outputs,
                     "face_bbox_overlay": qa_face_overlay["path"],
                     "pose_overlay": qa_pose_overlay["path"],
-                    "face_bbox_curve": "face_bbox_curve.json",
-                    "pose_conf_curve": "pose_conf_curve.json",
                     "mask_overlay": qa_mask_overlay["path"],
                     "sam_prompts_overlay": qa_prompt_overlay["path"],
                     "sam_prompt_keyframes": prompt_keyframes["path"],
-                    "mask_stats": "mask_stats.json",
                 }
                 if soft_band_masks is not None:
                     qa_soft_band_overlay = write_person_mask_artifact(

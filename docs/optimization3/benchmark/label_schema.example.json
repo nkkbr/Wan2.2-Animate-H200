@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "case_id": "short10s_keyframes",
+  "video_path": "/home/user1/wan2.2/test1/260306_01_step_1_0000_0010.mp4",
+  "frame_index": 20,
+  "image_path": "labels/short10s_keyframes/frame_000020.png",
+  "annotations": {
+    "hard_foreground": {
+      "path": "labels/short10s_keyframes/frame_000020_hard_foreground.png",
+      "format": "mask_png"
+    },
+    "soft_alpha": {
+      "path": "labels/short10s_keyframes/frame_000020_soft_alpha.png",
+      "format": "grayscale_png"
+    },
+    "boundary_band": {
+      "path": "labels/short10s_keyframes/frame_000020_boundary_band.png",
+      "format": "mask_png"
+    },
+    "face_landmarks": {
+      "points": [
+        {
+          "name": "left_eye_outer",
+          "x": 0.0,
+          "y": 0.0,
+          "visible": true
+        }
+      ]
+    },
+    "body_keypoints": {
+      "points": [
+        {
+          "name": "left_shoulder",
+          "x": 0.0,
+          "y": 0.0,
+          "visible": true
+        }
+      ]
+    },
+    "occlusion_regions": {
+      "path": "labels/short10s_keyframes/frame_000020_occlusion.png",
+      "format": "mask_png"
+    },
+    "uncertainty_regions": {
+      "path": "labels/short10s_keyframes/frame_000020_uncertainty.png",
+      "format": "mask_png"
+    }
+  }
+}
+

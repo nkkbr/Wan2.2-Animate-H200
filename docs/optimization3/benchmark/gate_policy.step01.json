@@ -1,0 +1,40 @@
+{
+  "policy_name": "optimization3_step01_gate",
+  "description": "Step 01 passes when benchmark infrastructure is complete, the baseline suite runs successfully, and gate artifacts are produced.",
+  "required_case_names": [
+    "compileall",
+    "generate_help",
+    "preprocess_help",
+    "extract_benchmark_keyframes",
+    "check_sam_prompting",
+    "check_control_stability",
+    "check_boundary_fusion",
+    "check_clean_plate_background",
+    "check_video_clean_plate_background",
+    "check_reference_normalization",
+    "check_boundary_refinement",
+    "check_soft_mask_pipeline",
+    "preprocess_structure_smoke",
+    "contract_preprocess_structure_smoke",
+    "generate_none",
+    "generate_refined",
+    "compute_replacement_metrics_refined",
+    "compute_boundary_refinement_metrics",
+    "compute_boundary_precision_metrics",
+    "compute_face_precision_metrics",
+    "compute_pose_precision_metrics",
+    "compute_background_precision_metrics"
+  ],
+  "required_benchmark_sets": [
+    "smoke_cases",
+    "labeled_cases",
+    "stress_cases"
+  ],
+  "required_outputs": [
+    "summary.json",
+    "summary.md",
+    "gate_result.json"
+  ],
+  "allow_missing_label_annotations": true,
+  "require_all_cases_passed": true
+}

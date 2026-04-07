@@ -1,0 +1,98 @@
+{
+  "benchmark_version": 1,
+  "name": "optimization3_example_manifest",
+  "notes": [
+    "This manifest registers the initial smoke, labeled, and stress clips available in the current workspace.",
+    "The labeled set starts as keyframe extraction targets and should be completed with human annotations later."
+  ],
+  "shared": {
+    "reference_image": "/home/user1/wan2.2/test1/Gemini_Generated_Image_2.png",
+    "process_checkpoint": "/home/user1/wan2.2/Wan2.2/Wan2.2-Animate-14B/process_checkpoint",
+    "generate_ckpt_dir": "/home/user1/wan2.2/Wan2.2/Wan2.2-Animate-14B"
+  },
+  "smoke_cases": [
+    {
+      "case_id": "short10s_main",
+      "video_path": "/home/user1/wan2.2/test1/260306_01_step_1_0000_0010.mp4",
+      "tags": [
+        "smoke",
+        "single_person",
+        "baseline"
+      ],
+      "expected_fps": 30,
+      "notes": "Primary 10-second smoke clip for optimization3."
+    },
+    {
+      "case_id": "scene001_short",
+      "video_path": "/home/user1/wan2.2/test1/clips/260306_01_step_1_0000_0200-Scene-001.mp4",
+      "tags": [
+        "smoke",
+        "scene"
+      ],
+      "notes": "Short scene clip available for lightweight smoke expansion."
+    }
+  ],
+  "labeled_cases": [
+    {
+      "case_id": "short10s_keyframes",
+      "video_path": "/home/user1/wan2.2/test1/260306_01_step_1_0000_0010.mp4",
+      "label_status": "keyframes_pending_annotation",
+      "keyframes": [
+        0,
+        5,
+        10,
+        20,
+        30,
+        40,
+        49
+      ],
+      "planned_annotation_types": [
+        "hard_foreground",
+        "soft_alpha",
+        "boundary_band",
+        "face_landmarks",
+        "body_keypoints",
+        "occlusion_regions",
+        "uncertainty_regions"
+      ]
+    },
+    {
+      "case_id": "scene002_keyframes",
+      "video_path": "/home/user1/wan2.2/test1/clips/260306_01_step_1_0000_0200-Scene-002.mp4",
+      "label_status": "keyframes_pending_annotation",
+      "keyframes": [
+        0,
+        8,
+        16,
+        24
+      ],
+      "planned_annotation_types": [
+        "hard_foreground",
+        "soft_alpha",
+        "face_landmarks",
+        "body_keypoints"
+      ]
+    }
+  ],
+  "stress_cases": [
+    {
+      "case_id": "long200s_source",
+      "video_path": "/home/user1/wan2.2/test1/260306_01_step_1_0000_0200.mp4",
+      "tags": [
+        "stress",
+        "long_sequence"
+      ],
+      "notes": "Long source clip for drift and long-run preprocess/generate evaluation."
+    },
+    {
+      "case_id": "scene004_longer",
+      "video_path": "/home/user1/wan2.2/test1/clips/260306_01_step_1_0000_0200-Scene-004.mp4",
+      "tags": [
+        "stress",
+        "scene"
+      ],
+      "notes": "Scene clip intended for later higher-difficulty evaluation."
+    }
+  ]
+}
+
