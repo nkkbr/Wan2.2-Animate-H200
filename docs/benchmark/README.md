@@ -117,6 +117,10 @@ latent temporal handoff 探索检查脚本见：
 
 - `scripts/eval/check_temporal_handoff.py`
 
+reference image normalization 检查脚本见：
+
+- `scripts/eval/check_reference_normalization.py`
+
 ## 7. 后续建议
 
 后续应把外部 benchmark 素材逐步补充到统一 manifest 中，并且每个新增素材都附带：

@@ -101,6 +101,7 @@ def build_preprocess_metadata(
     mask_generation: dict | None = None,
     soft_mask_settings: dict | None = None,
     background_settings: dict | None = None,
+    reference_settings: dict | None = None,
     qa_outputs: dict | None = None,
 ) -> dict:
     if src_files is None:
@@ -212,6 +213,7 @@ def build_preprocess_metadata(
             "sam2_mask_generation": mask_generation or {},
             "soft_mask": soft_mask_settings or {},
             "background": background_settings or {},
+            "reference_normalization": reference_settings or {},
         },
         "source_inputs": {
             "video_path": str(Path(video_path).resolve()),

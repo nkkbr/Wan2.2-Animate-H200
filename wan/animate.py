@@ -296,7 +296,8 @@ class WanAnimate:
         face_images = load_rgb_artifact(src_face_artifact["path"], src_face_artifact.get("format"))
         height, width = cond_images[0].shape[:2]
         refer_images = load_image_rgb(src_ref_artifact["path"])
-        refer_images = self.padding_resize(refer_images, height=height, width=width)
+        if refer_images.shape[:2] != (height, width):
+            refer_images = self.padding_resize(refer_images, height=height, width=width)
         return cond_images, face_images, refer_images
     
     def prepare_source_for_replace(self, src_bg_artifact, src_mask_artifact):
@@ -660,11 +661,16 @@ class WanAnimate:
                     "bg_inpaint_mode",
                     preprocess_metadata.get("src_files", {}).get("background", {}).get("background_mode", "unknown"),
                 )
+                reference_mode = preprocess_metadata.get("processing", {}).get("reference_normalization", {}).get(
+                    "reference_normalization_mode",
+                    "none",
+                )
                 logging.info(
-                    "Mask contract: src_mask=%s, generate uses %s. background_mode=%s",
+                    "Mask contract: src_mask=%s, generate uses %s. background_mode=%s reference_mode=%s",
                     preprocess_metadata.get("mask_semantics", PERSON_MASK_SEMANTICS),
                     BACKGROUND_KEEP_MASK_SEMANTICS,
                     background_mode,
+                    reference_mode,
                 )
 
         cond_images, face_images, refer_images = self.prepare_source(
@@ -790,6 +796,14 @@ class WanAnimate:
                 )
                 if replace_flag and preprocess_metadata is not None else None
             ),
+            "reference_normalization_mode": (
+                preprocess_metadata.get("processing", {}).get("reference_normalization", {}).get(
+                    "reference_normalization_mode",
+                    "none",
+                )
+                if preprocess_metadata is not None else None
+            ),
+            "reference_artifact_path": artifacts["reference"]["path"],
             "soft_band_available": bool(soft_band_images is not None) if replace_flag else False,
             "text_condition_encode_sec": text_condition_encode_sec,
             "reference_condition_encode_sec": reference_condition_encode_sec,

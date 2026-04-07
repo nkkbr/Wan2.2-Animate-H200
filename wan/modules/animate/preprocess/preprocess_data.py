@@ -317,6 +317,44 @@ def _parse_args():
         default=0.0,
         help="EMA-like temporal smoothing strength applied only inside inpainted regions of the clean plate."
     )
+    parser.add_argument(
+        "--reference_normalization_mode",
+        type=str,
+        default="none",
+        choices=["none", "bbox_match"],
+        help="Optional replacement reference normalization strategy. 'bbox_match' scales and re-centers the reference subject to match the driver subject occupancy."
+    )
+    parser.add_argument(
+        "--reference_target_bbox_source",
+        type=str,
+        default="median_first_n",
+        choices=["first_frame", "median_first_n"],
+        help="How to estimate the target subject bbox from the driver video."
+    )
+    parser.add_argument(
+        "--reference_target_bbox_frames",
+        type=int,
+        default=16,
+        help="Number of initial driver frames used when reference_target_bbox_source=median_first_n."
+    )
+    parser.add_argument(
+        "--reference_bbox_conf_thresh",
+        type=float,
+        default=0.35,
+        help="Confidence threshold for pose points used to derive both driver and reference person bboxes."
+    )
+    parser.add_argument(
+        "--reference_scale_clamp_min",
+        type=float,
+        default=0.75,
+        help="Lower clamp for the reference normalization scale factor."
+    )
+    parser.add_argument(
+        "--reference_scale_clamp_max",
+        type=float,
+        default=1.6,
+        help="Upper clamp for the reference normalization scale factor."
+    )
 
     parser.add_argument(
         "--replace_flag",
@@ -379,6 +417,10 @@ if __name__ == '__main__':
     assert Path(args.refer_path).exists(), f"Reference image path does not exist: {args.refer_path}"
     if args.bg_inpaint_mode == "video":
         raise NotImplementedError("bg_inpaint_mode=video is reserved for a future step. Use 'none' or 'image' in the current pipeline.")
+    if args.reference_scale_clamp_min <= 0 or args.reference_scale_clamp_max <= 0:
+        raise ValueError("reference_scale_clamp_min and reference_scale_clamp_max must be > 0.")
+    if args.reference_scale_clamp_min > args.reference_scale_clamp_max:
+        raise ValueError("reference_scale_clamp_min must be <= reference_scale_clamp_max.")
     run_layout = None
     manifest_token = None
     if should_write_manifest(args):
@@ -454,6 +496,12 @@ if __name__ == '__main__':
                                             bg_inpaint_mask_expand=args.bg_inpaint_mask_expand,
                                             bg_inpaint_radius=args.bg_inpaint_radius,
                                             bg_temporal_smooth_strength=args.bg_temporal_smooth_strength,
+                                            reference_normalization_mode=args.reference_normalization_mode,
+                                            reference_target_bbox_source=args.reference_target_bbox_source,
+                                            reference_target_bbox_frames=args.reference_target_bbox_frames,
+                                            reference_bbox_conf_thresh=args.reference_bbox_conf_thresh,
+                                            reference_scale_clamp_min=args.reference_scale_clamp_min,
+                                            reference_scale_clamp_max=args.reference_scale_clamp_max,
                                             iterations=args.iterations,
                                             k=args.k,
                                             w_len=args.w_len,
@@ -527,6 +575,15 @@ if __name__ == '__main__':
                 "bg_inpaint_mask_expand": args.bg_inpaint_mask_expand,
                 "bg_inpaint_radius": args.bg_inpaint_radius,
                 "bg_temporal_smooth_strength": args.bg_temporal_smooth_strength,
+            },
+            reference_settings={
+                "reference_normalization_mode": args.reference_normalization_mode,
+                "reference_target_bbox_source": args.reference_target_bbox_source,
+                "reference_target_bbox_frames": args.reference_target_bbox_frames,
+                "reference_bbox_conf_thresh": args.reference_bbox_conf_thresh,
+                "reference_scale_clamp_min": args.reference_scale_clamp_min,
+                "reference_scale_clamp_max": args.reference_scale_clamp_max,
+                "stats": pipeline_outputs.get("reference_normalization", {}),
             },
             qa_outputs=pipeline_outputs.get("qa_outputs", {}),
         )

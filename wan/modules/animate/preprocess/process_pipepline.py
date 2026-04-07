@@ -1,7 +1,6 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import os
 import numpy as np
-import shutil
 import torch
 from diffusers import FluxKontextPipeline
 import cv2
@@ -38,6 +37,15 @@ from wan.utils.animate_contract import SOFT_BAND_SEMANTICS, load_image_rgb, vali
 from wan.utils.media_io import write_person_mask_artifact, write_rgb_artifact
 from wan.utils.replacement_masks import build_soft_boundary_band
 from background_clean_plate import build_clean_plate_background
+from reference_normalization import (
+    bbox_from_pose_meta,
+    estimate_driver_target_bbox,
+    make_reference_normalization_preview,
+    normalize_reference_image,
+    project_bbox_with_letterbox,
+    scale_bbox_between_shapes,
+    write_reference_image,
+)
 
 
 class ProcessPipeline():
@@ -105,6 +113,12 @@ class ProcessPipeline():
         bg_inpaint_mask_expand=16,
         bg_inpaint_radius=5.0,
         bg_temporal_smooth_strength=0.0,
+        reference_normalization_mode="none",
+        reference_target_bbox_source="median_first_n",
+        reference_target_bbox_frames=16,
+        reference_bbox_conf_thresh=0.35,
+        reference_scale_clamp_min=0.75,
+        reference_scale_clamp_max=1.6,
         iterations=3,
         k=7,
         w_len=1,
@@ -182,16 +196,97 @@ class ProcessPipeline():
             logger.info(f"Processing reference image: {refer_image_path}")
             refer_img = load_image_rgb(refer_image_path)
             src_ref_path = os.path.join(output_path, 'src_ref.png')
-            shutil.copy(refer_image_path, src_ref_path)
-            reference_height, reference_width = refer_img.shape[:2]
+            write_reference_image(src_ref_path, refer_img)
+            reference_original_height, reference_original_width = refer_img.shape[:2]
+            reference_bbox_detection = None
+            reference_bbox_original = None
+            driver_target_bbox = None
+            driver_target_stats = {
+                "source": reference_target_bbox_source,
+                "used_frames": 0,
+                "valid_frames": 0,
+                "frame_indices": [],
+            }
+            normalized_reference = None
+            reference_normalization = {
+                "enabled": reference_normalization_mode != "none",
+                "mode": reference_normalization_mode,
+                "target_bbox_source": reference_target_bbox_source,
+                "target_bbox_frames": int(reference_target_bbox_frames),
+                "bbox_conf_thresh": float(reference_bbox_conf_thresh),
+                "driver_target_bbox_stats": driver_target_stats,
+                "reference_detection_shape": None,
+                "reference_bbox_detection": None,
+                "reference_bbox_original": None,
+            }
+            if reference_normalization_mode == "bbox_match":
+                reference_detection_img = resize_by_area(
+                    refer_img,
+                    resolution_area[0] * resolution_area[1],
+                    divisor=16,
+                )
+                reference_pose_meta = self.pose2d([reference_detection_img])[0]
+                reference_bbox_detection = bbox_from_pose_meta(
+                    reference_pose_meta,
+                    image_shape=reference_detection_img.shape[:2],
+                    conf_thresh=reference_bbox_conf_thresh,
+                )
+                reference_bbox_original = scale_bbox_between_shapes(
+                    reference_bbox_detection,
+                    from_shape=reference_detection_img.shape[:2],
+                    to_shape=refer_img.shape[:2],
+                )
+                driver_target_bbox, driver_target_stats = estimate_driver_target_bbox(
+                    tpl_pose_metas,
+                    image_shape=(height, width),
+                    source=reference_target_bbox_source,
+                    num_frames=reference_target_bbox_frames,
+                    conf_thresh=reference_bbox_conf_thresh,
+                )
+                reference_normalization.update({
+                    "driver_target_bbox_stats": driver_target_stats,
+                    "reference_detection_shape": [
+                        int(reference_detection_img.shape[0]),
+                        int(reference_detection_img.shape[1]),
+                    ],
+                    "reference_bbox_detection": None if reference_bbox_detection is None else [float(v) for v in reference_bbox_detection.tolist()],
+                    "reference_bbox_original": None if reference_bbox_original is None else [float(v) for v in reference_bbox_original.tolist()],
+                })
+                normalized_reference, normalization_stats = normalize_reference_image(
+                    refer_img,
+                    reference_bbox=reference_bbox_original,
+                    target_bbox=driver_target_bbox,
+                    canvas_shape=(height, width),
+                    scale_clamp_min=reference_scale_clamp_min,
+                    scale_clamp_max=reference_scale_clamp_max,
+                )
+                reference_normalization.update(normalization_stats)
+                if normalized_reference is not None:
+                    normalized_path = os.path.join(output_path, "src_ref_normalized.png")
+                    write_reference_image(normalized_path, normalized_reference)
+                    active_reference_path = "src_ref_normalized.png"
+                    active_reference_image = normalized_reference
+                else:
+                    active_reference_path = "src_ref.png"
+                    active_reference_image = refer_img
+            else:
+                reference_normalization.update({
+                    "applied": False,
+                    "reason": "disabled",
+                })
+                active_reference_path = "src_ref.png"
+                active_reference_image = refer_img
 
-            refer_img = padding_resize(refer_img, height, width)
+            reference_height, reference_width = active_reference_image.shape[:2]
+            refer_canvas = active_reference_image
+            if refer_canvas.shape[:2] != (height, width):
+                refer_canvas = padding_resize(refer_canvas, height, width)
             logger.info(f"Processing template video: {video_path}")
             tpl_retarget_pose_metas = [AAPoseMeta.from_humanapi_meta(meta) for meta in tpl_pose_metas]
             cond_images = []
 
             for idx, meta in enumerate(tpl_retarget_pose_metas):
-                canvas = np.zeros_like(refer_img)
+                canvas = np.zeros_like(refer_canvas)
                 conditioning_image = draw_aapose_by_meta_new(canvas, meta)
                 cond_images.append(conditioning_image)
             masks, mask_debug = self.get_mask(
@@ -338,6 +433,24 @@ class ProcessPipeline():
                     "background_diff": qa_background_diff["path"],
                     "background_inpaint_mask": qa_background_mask["path"],
                 })
+                if reference_normalization_mode != "none":
+                    original_canvas = padding_resize(refer_img, height, width)
+                    original_bbox_canvas = project_bbox_with_letterbox(
+                        reference_bbox_original,
+                        image_shape=refer_img.shape[:2],
+                        canvas_shape=(height, width),
+                    )
+                    normalized_bbox = reference_normalization.get("normalized_bbox")
+                    preview = make_reference_normalization_preview(
+                        original_canvas=original_canvas,
+                        normalized_canvas=refer_canvas,
+                        original_bbox=original_bbox_canvas,
+                        target_bbox=driver_target_bbox,
+                        normalized_bbox=normalized_bbox,
+                    )
+                    preview_path = os.path.join(output_path, "reference_normalization_preview.png")
+                    write_reference_image(preview_path, preview)
+                    qa_outputs["reference_normalization_preview"] = "reference_normalization_preview.png"
 
             src_files = {
                 "pose": write_rgb_artifact(
@@ -369,7 +482,7 @@ class ProcessPipeline():
                     fps=fps,
                 ),
                 "reference": {
-                    "path": "src_ref.png",
+                    "path": active_reference_path,
                     "type": "image",
                     "format": "png",
                     "height": int(reference_height),
@@ -382,6 +495,20 @@ class ProcessPipeline():
                     "resized_width": int(width),
                 },
             }
+            if active_reference_path != "src_ref.png":
+                src_files["reference_original"] = {
+                    "path": "src_ref.png",
+                    "type": "image",
+                    "format": "png",
+                    "height": int(reference_original_height),
+                    "width": int(reference_original_width),
+                    "channels": 3,
+                    "color_space": "rgb",
+                    "dtype": "uint8",
+                    "shape": [int(reference_original_height), int(reference_original_width), 3],
+                    "resized_height": int(height),
+                    "resized_width": int(width),
+                }
             if soft_band_masks is not None:
                 src_files["soft_band"] = write_person_mask_artifact(
                     mask_frames=soft_band_masks,
@@ -401,6 +528,7 @@ class ProcessPipeline():
                 "reference_height": int(reference_height),
                 "reference_width": int(reference_width),
                 "src_files": src_files,
+                "reference_normalization": reference_normalization,
             }
             if qa_outputs:
                 outputs["qa_outputs"] = qa_outputs
@@ -409,7 +537,7 @@ class ProcessPipeline():
             logger.info(f"Processing reference image: {refer_image_path}")
             refer_img = load_image_rgb(refer_image_path)
             src_ref_path = os.path.join(output_path, 'src_ref.png')
-            shutil.copy(refer_image_path, src_ref_path)
+            write_reference_image(src_ref_path, refer_img)
             reference_height, reference_width = refer_img.shape[:2]
             
             refer_img = resize_by_area(refer_img, resolution_area[0] * resolution_area[1], divisor=16)

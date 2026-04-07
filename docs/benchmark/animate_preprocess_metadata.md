@@ -31,8 +31,9 @@
 - `processing.sam2_mask_generation`: replacement 模式下 SAM2 chunk / prompt / negative-point 参数快照
 - `processing.soft_mask`: soft mask / boundary band 参数快照
 - `processing.background`: replacement 模式下背景构建参数快照
+- `processing.reference_normalization`: reference normalization 参数与统计快照
 - `qa_outputs`: 可选的 QA overlay 与曲线产物
-  - 例如 `face_bbox_overlay`、`pose_overlay`、`mask_overlay`、`soft_band_overlay`、`background_hole`、`background_clean_plate`、`background_diff`
+  - 例如 `face_bbox_overlay`、`pose_overlay`、`mask_overlay`、`soft_band_overlay`、`background_hole`、`background_clean_plate`、`background_diff`、`reference_normalization_preview`
 
 ## `src_files`
 
@@ -67,11 +68,17 @@
   - `format`: `mp4`、`png_seq` 或 `npz`
   - `frame_count/height/width/channels/color_space/dtype/shape/fps`
 - `reference`
-  - `path`: `src_ref.png`
+  - `path`: `src_ref.png` 或 `src_ref_normalized.png`
   - `type`: `image`
   - `format`: `png`
   - `height/width/channels/color_space/dtype/shape`
   - `resized_height/resized_width`: generate 在内存中会将参考图 resize 到这个尺寸
+- `reference_original` (optional)
+  - `path`: `src_ref.png`
+  - `type`: `image`
+  - `format`: `png`
+  - `height/width/channels/color_space/dtype/shape`
+  - `resized_height/resized_width`: 仅用于 QA 和回溯原始 reference，不会被 generate 主路径消费
 
 ### Additional required artifacts for replacement mode
 
