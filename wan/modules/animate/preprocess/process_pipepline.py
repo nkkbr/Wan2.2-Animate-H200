@@ -28,10 +28,13 @@ from sam_prompting import (
     write_json as write_mask_json,
     write_prompt_keyframes,
 )
-import sam2.modeling.sam.transformer as transformer
-transformer.USE_FLASH_ATTN = False
-transformer.MATH_KERNEL_ON = True
-transformer.OLD_GPU = True
+from sam_runtime import (
+    apply_sam_runtime_profile,
+    ensure_trace_dir,
+    prompt_entry_trace,
+    resolve_sam_runtime_profile,
+    write_chunk_trace,
+)
 from sam_utils import build_sam2_video_predictor
 from wan.utils.animate_contract import SOFT_BAND_SEMANTICS, load_image_rgb, validate_rgb_video
 from wan.utils.media_io import write_person_mask_artifact, write_rgb_artifact
@@ -49,12 +52,39 @@ from reference_normalization import (
 
 
 class ProcessPipeline():
-    def __init__(self, det_checkpoint_path, pose2d_checkpoint_path, sam_checkpoint_path, flux_kontext_path):
+    def __init__(
+        self,
+        det_checkpoint_path,
+        pose2d_checkpoint_path,
+        sam_checkpoint_path,
+        flux_kontext_path,
+        sam_apply_postprocessing=True,
+        sam_runtime_profile="legacy_safe",
+        sam_use_flash_attn=None,
+        sam_math_kernel_on=None,
+        sam_old_gpu_mode=None,
+        sam_offload_video_to_cpu=None,
+        sam_offload_state_to_cpu=None,
+    ):
         self.pose2d = Pose2d(checkpoint=pose2d_checkpoint_path, detector_checkpoint=det_checkpoint_path)
+        self.sam_runtime_config = resolve_sam_runtime_profile(
+            sam_runtime_profile,
+            use_flash_attn=sam_use_flash_attn,
+            math_kernel_on=sam_math_kernel_on,
+            old_gpu=sam_old_gpu_mode,
+            offload_video_to_cpu=sam_offload_video_to_cpu,
+            offload_state_to_cpu=sam_offload_state_to_cpu,
+        )
+        self.sam_apply_postprocessing = bool(sam_apply_postprocessing)
 
         model_cfg = "sam2_hiera_l.yaml"
         if sam_checkpoint_path is not None:
-            self.predictor = build_sam2_video_predictor(model_cfg, sam_checkpoint_path)
+            apply_sam_runtime_profile(self.sam_runtime_config)
+            self.predictor = build_sam2_video_predictor(
+                model_cfg,
+                sam_checkpoint_path,
+                apply_postprocessing=self.sam_apply_postprocessing,
+            )
         if flux_kontext_path is not None:
             self.flux_kontext = FluxKontextPipeline.from_pretrained(flux_kontext_path, torch_dtype=torch.bfloat16).to("cuda")
 
@@ -105,6 +135,9 @@ class ProcessPipeline():
         sam_use_negative_points=True,
         sam_negative_margin=0.08,
         sam_reprompt_interval=40,
+        sam_prompt_mode="points",
+        sam_debug_trace=False,
+        sam_debug_trace_dir=None,
         soft_mask_mode="soft_band",
         soft_mask_band_width=24,
         soft_mask_blur_kernel=5,
@@ -289,6 +322,33 @@ class ProcessPipeline():
                 canvas = np.zeros_like(refer_canvas)
                 conditioning_image = draw_aapose_by_meta_new(canvas, meta)
                 cond_images.append(conditioning_image)
+            trace_dir = ensure_trace_dir(output_path=output_path, trace_dir=sam_debug_trace_dir) if sam_debug_trace else None
+            if trace_dir is not None:
+                write_chunk_trace(
+                    trace_dir,
+                    -1,
+                    {
+                        "stage": "session_started",
+                        "video_path": video_path,
+                        "frame_count": int(len(frames)),
+                        "frame_shape": list(frames[0].shape),
+                        "sam_runtime_profile": self.sam_runtime_config,
+                        "sam_settings": {
+                            "sam_chunk_len": int(sam_chunk_len),
+                            "sam_keyframes_per_chunk": int(sam_keyframes_per_chunk),
+                            "sam_prompt_body_conf_thresh": float(sam_prompt_body_conf_thresh),
+                            "sam_prompt_face_conf_thresh": float(sam_prompt_face_conf_thresh),
+                            "sam_prompt_hand_conf_thresh": float(sam_prompt_hand_conf_thresh),
+                            "sam_prompt_face_min_points": int(sam_prompt_face_min_points),
+                            "sam_prompt_hand_min_points": int(sam_prompt_hand_min_points),
+                            "sam_use_negative_points": bool(sam_use_negative_points),
+                        "sam_negative_margin": float(sam_negative_margin),
+                        "sam_reprompt_interval": int(sam_reprompt_interval),
+                        "sam_prompt_mode": sam_prompt_mode,
+                        "sam_apply_postprocessing": bool(self.sam_apply_postprocessing),
+                    },
+                },
+            )
             masks, mask_debug = self.get_mask(
                 frames,
                 kp2ds_all=tpl_pose_metas,
@@ -302,6 +362,9 @@ class ProcessPipeline():
                 sam_use_negative_points=sam_use_negative_points,
                 sam_negative_margin=sam_negative_margin,
                 sam_reprompt_interval=sam_reprompt_interval,
+                sam_prompt_mode=sam_prompt_mode,
+                sam_debug_trace=sam_debug_trace,
+                sam_debug_trace_dir=trace_dir,
             )
 
             hole_bg_images = []
@@ -529,6 +592,9 @@ class ProcessPipeline():
                 "reference_width": int(reference_width),
                 "src_files": src_files,
                 "reference_normalization": reference_normalization,
+                "sam_runtime": dict(self.sam_runtime_config),
+                "sam_apply_postprocessing": bool(self.sam_apply_postprocessing),
+                "sam_trace_dir": str(trace_dir) if trace_dir is not None else None,
             }
             if qa_outputs:
                 outputs["qa_outputs"] = qa_outputs
@@ -790,6 +856,9 @@ class ProcessPipeline():
         sam_use_negative_points,
         sam_negative_margin,
         sam_reprompt_interval,
+        sam_prompt_mode,
+        sam_debug_trace,
+        sam_debug_trace_dir,
     ):
         frame_num = len(frames)
         th_step = max(1, int(sam_chunk_len))
@@ -805,6 +874,18 @@ class ProcessPipeline():
             kp2ds = kp2ds_all[start_frame:end_frame]
             if len(each_frames) <= 0:
                 continue
+            self._validate_chunk_frames(each_frames, index)
+            chunk_trace = {
+                "stage": "chunk_loaded",
+                "chunk_index": int(index),
+                "start_frame": int(start_frame),
+                "end_frame": int(end_frame - 1),
+                "frame_count": int(len(each_frames)),
+                "frame_shape": list(each_frames[0].shape),
+                "sam_runtime_profile": dict(self.sam_runtime_config),
+            }
+            if sam_debug_trace and sam_debug_trace_dir is not None:
+                write_chunk_trace(sam_debug_trace_dir, index, chunk_trace)
 
             prompt_plan = plan_chunk_prompts(
                 kp2ds,
@@ -840,26 +921,96 @@ class ProcessPipeline():
                 prompt_plan["prompt_entries"] = prompt_entries
                 prompt_plan["prompt_frames"] = [0]
                 prompt_plan["reprompt_frames"] = []
-
-            inference_state = self.predictor.init_state_v2(frames=each_frames)
-            self.predictor.reset_state(inference_state)
-            ann_obj_id = 1
-            for prompt_entry in prompt_entries:
-                ann_frame_idx = prompt_entry["frame_idx"]
-                _, out_obj_ids, out_mask_logits = self.predictor.add_new_points(
-                    inference_state=inference_state,
-                    frame_idx=ann_frame_idx,
-                    obj_id=ann_obj_id,
-                    points=prompt_entry["points"],
-                    labels=prompt_entry["labels"],
+            prompt_entries = [
+                self._sanitize_prompt_entry(
+                    prompt_entry,
+                    image_shape=(each_frames[0].shape[0], each_frames[0].shape[1]),
+                    chunk_index=index,
+                    prompt_index=prompt_index,
                 )
-
-            video_segments = {}
-            for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(inference_state):
-                video_segments[out_frame_idx] = {
-                    out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-                    for i, out_obj_id in enumerate(out_obj_ids)
+                for prompt_index, prompt_entry in enumerate(prompt_entries)
+            ]
+            chunk_trace.update(
+                {
+                    "stage": "prompt_plan_ready",
+                    "prompt_frames": [int(x) for x in prompt_plan["prompt_frames"]],
+                    "reprompt_frames": [int(x) for x in prompt_plan["reprompt_frames"]],
+                    "prompt_entries": [prompt_entry_trace(prompt_entry) for prompt_entry in prompt_entries],
                 }
+            )
+            if sam_debug_trace and sam_debug_trace_dir is not None:
+                write_chunk_trace(sam_debug_trace_dir, index, chunk_trace)
+
+            try:
+                chunk_trace["stage"] = "before_init_state"
+                if sam_debug_trace and sam_debug_trace_dir is not None:
+                    write_chunk_trace(sam_debug_trace_dir, index, chunk_trace)
+                inference_state = self.predictor.init_state_v2(
+                    frames=each_frames,
+                    offload_video_to_cpu=self.sam_runtime_config["offload_video_to_cpu"],
+                    offload_state_to_cpu=self.sam_runtime_config["offload_state_to_cpu"],
+                )
+                chunk_trace["stage"] = "after_init_state"
+                chunk_trace["inference_num_frames"] = int(inference_state["num_frames"])
+                if sam_debug_trace and sam_debug_trace_dir is not None:
+                    write_chunk_trace(sam_debug_trace_dir, index, chunk_trace)
+                self.predictor.reset_state(inference_state)
+                ann_obj_id = 1
+                for prompt_offset, prompt_entry in enumerate(prompt_entries):
+                    ann_frame_idx = prompt_entry["frame_idx"]
+                    chunk_trace["stage"] = "before_add_new_points" if sam_prompt_mode == "points" else "before_add_new_mask"
+                    chunk_trace["current_prompt_index"] = int(prompt_offset)
+                    chunk_trace["current_prompt_frame_idx"] = int(ann_frame_idx)
+                    if sam_debug_trace and sam_debug_trace_dir is not None:
+                        write_chunk_trace(sam_debug_trace_dir, index, chunk_trace)
+                    if sam_prompt_mode == "mask_seed":
+                        seed_mask = self._build_seed_mask(
+                            prompt_entry,
+                            image_shape=(each_frames[0].shape[0], each_frames[0].shape[1]),
+                        )
+                        _, out_obj_ids, out_mask_logits = self.predictor.add_new_mask(
+                            inference_state=inference_state,
+                            frame_idx=ann_frame_idx,
+                            obj_id=ann_obj_id,
+                            mask=seed_mask,
+                        )
+                        chunk_trace["stage"] = "after_add_new_mask"
+                        chunk_trace["current_prompt_mode"] = "mask_seed"
+                    else:
+                        _, out_obj_ids, out_mask_logits = self.predictor.add_new_points(
+                            inference_state=inference_state,
+                            frame_idx=ann_frame_idx,
+                            obj_id=ann_obj_id,
+                            points=prompt_entry["points"],
+                            labels=prompt_entry["labels"],
+                        )
+                        chunk_trace["stage"] = "after_add_new_points"
+                        chunk_trace["current_prompt_mode"] = "points"
+                    chunk_trace["current_prompt_obj_count"] = int(len(out_obj_ids))
+                    chunk_trace["current_prompt_mask_logits_shape"] = list(out_mask_logits.shape)
+                    if sam_debug_trace and sam_debug_trace_dir is not None:
+                        write_chunk_trace(sam_debug_trace_dir, index, chunk_trace)
+
+                chunk_trace["stage"] = "before_propagate"
+                if sam_debug_trace and sam_debug_trace_dir is not None:
+                    write_chunk_trace(sam_debug_trace_dir, index, chunk_trace)
+                video_segments = {}
+                for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(inference_state):
+                    video_segments[out_frame_idx] = {
+                        out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
+                        for i, out_obj_id in enumerate(out_obj_ids)
+                    }
+                chunk_trace["stage"] = "after_propagate"
+                chunk_trace["video_segments_count"] = int(len(video_segments))
+                chunk_trace["video_segments_nonempty_count"] = int(sum(1 for value in video_segments.values() if value))
+                if sam_debug_trace and sam_debug_trace_dir is not None:
+                    write_chunk_trace(sam_debug_trace_dir, index, chunk_trace)
+            except Exception as exc:
+                chunk_trace["stage"] = "failed"
+                chunk_trace["error"] = str(exc)
+                if sam_debug_trace and sam_debug_trace_dir is not None:
+                    write_chunk_trace(sam_debug_trace_dir, index, chunk_trace)
+                raise
 
             for out_frame_idx in range(len(each_frames)):
                 segment_masks = video_segments.get(out_frame_idx, {})
@@ -896,8 +1047,95 @@ class ProcessPipeline():
             sam_use_negative_points=sam_use_negative_points,
             sam_negative_margin=sam_negative_margin,
         )
-        return all_mask, {"prompt_entries": global_prompt_entries, "mask_stats": mask_stats}
+        if sam_debug_trace and sam_debug_trace_dir is not None:
+            write_chunk_trace(
+                sam_debug_trace_dir,
+                -1,
+                {
+                    "stage": "session_completed",
+                    "frame_count": int(frame_num),
+                    "chunk_count": int(num_step),
+                    "mask_frame_count": int(all_mask.shape[0]),
+                    "sam_runtime_profile": dict(self.sam_runtime_config),
+                },
+            )
+        return all_mask, {
+            "prompt_entries": global_prompt_entries,
+            "mask_stats": mask_stats,
+            "sam_trace_dir": str(sam_debug_trace_dir) if sam_debug_trace_dir is not None else None,
+            "sam_runtime_profile": dict(self.sam_runtime_config),
+        }
     
+    def _validate_chunk_frames(self, frames, chunk_index):
+        if len(frames) <= 0:
+            raise ValueError(f"SAM2 chunk {chunk_index} contains no frames.")
+        expected_shape = frames[0].shape
+        if len(expected_shape) != 3 or expected_shape[2] != 3:
+            raise ValueError(f"SAM2 chunk {chunk_index} must use RGB frames shaped [H, W, 3]. Got {expected_shape}.")
+        for frame_offset, frame in enumerate(frames):
+            if frame.shape != expected_shape:
+                raise ValueError(
+                    f"SAM2 chunk {chunk_index} frame {frame_offset} shape mismatch: expected {expected_shape}, got {frame.shape}."
+                )
+
+    def _sanitize_prompt_entry(self, prompt_entry, *, image_shape, chunk_index, prompt_index):
+        height, width = image_shape
+        points = np.asarray(prompt_entry["points"], dtype=np.int32)
+        labels = np.asarray(prompt_entry["labels"], dtype=np.int32)
+        if points.ndim != 2 or points.shape[1] != 2:
+            raise ValueError(
+                f"SAM2 chunk {chunk_index} prompt {prompt_index} has invalid points shape {points.shape}; expected [N, 2]."
+            )
+        if labels.ndim != 1 or labels.shape[0] != points.shape[0]:
+            raise ValueError(
+                f"SAM2 chunk {chunk_index} prompt {prompt_index} labels shape {labels.shape} does not match points {points.shape}."
+            )
+        if points.shape[0] <= 0:
+            raise ValueError(f"SAM2 chunk {chunk_index} prompt {prompt_index} has no points.")
+        if not np.all((labels == 0) | (labels == 1)):
+            raise ValueError(f"SAM2 chunk {chunk_index} prompt {prompt_index} labels must be 0/1.")
+        xs = points[:, 0]
+        ys = points[:, 1]
+        if np.any(xs < 0) or np.any(xs >= width) or np.any(ys < 0) or np.any(ys >= height):
+            raise ValueError(
+                f"SAM2 chunk {chunk_index} prompt {prompt_index} contains out-of-bounds points for image_shape={image_shape}. "
+                f"x-range=[{int(xs.min())}, {int(xs.max())}], y-range=[{int(ys.min())}, {int(ys.max())}]."
+            )
+        sanitized = dict(prompt_entry)
+        sanitized["points"] = points
+        sanitized["labels"] = labels
+        sanitized["positive_count"] = int((labels == 1).sum())
+        sanitized["negative_count"] = int((labels == 0).sum())
+        return sanitized
+
+    def _build_seed_mask(self, prompt_entry, *, image_shape):
+        height, width = image_shape
+        seed_mask = np.zeros((height, width), dtype=np.uint8)
+        person_bbox = prompt_entry.get("person_bbox")
+        if person_bbox is not None:
+            x1, y1, x2, y2 = [int(v) for v in person_bbox]
+            x1 = max(0, min(width - 1, x1))
+            x2 = max(0, min(width, x2))
+            y1 = max(0, min(height - 1, y1))
+            y2 = max(0, min(height, y2))
+            if x2 > x1 and y2 > y1:
+                seed_mask[y1:y2, x1:x2] = 1
+        if not seed_mask.any():
+            positive_points = prompt_entry.get("positive_points")
+            if positive_points is None:
+                points = np.asarray(prompt_entry["points"], dtype=np.int32)
+                labels = np.asarray(prompt_entry["labels"], dtype=np.int32)
+                positive_points = points[labels == 1]
+            positive_points = np.asarray(positive_points, dtype=np.int32)
+            radius = max(3, min(height, width) // 64)
+            for x, y in positive_points:
+                cv2.circle(seed_mask, (int(x), int(y)), radius, 1, thickness=-1)
+        if not seed_mask.any():
+            fallback_x = width // 2
+            fallback_y = height // 2
+            cv2.circle(seed_mask, (fallback_x, fallback_y), max(3, min(height, width) // 64), 1, thickness=-1)
+        return seed_mask.astype(bool)
+
     def convert_list_to_array(self, metas):
         metas_list = []
         for meta in metas:

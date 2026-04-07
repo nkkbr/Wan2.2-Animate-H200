@@ -267,6 +267,68 @@ def _parse_args():
         help="Additional fixed-interval SAM2 re-prompt spacing within each chunk. Set to 0 to disable."
     )
     parser.add_argument(
+        "--sam_prompt_mode",
+        type=str,
+        default="points",
+        choices=["points", "mask_seed"],
+        help="How SAM2 is conditioned inside each chunk. 'points' keeps the normal click-based path. 'mask_seed' is a conservative Step 01 fallback used to isolate add_new_points instability."
+    )
+    parser.add_argument(
+        "--sam_runtime_profile",
+        type=str,
+        default="legacy_safe",
+        choices=["legacy_safe", "h200_safe", "h200_aggressive"],
+        help="Named SAM2 runtime profile. Step 01 uses this to compare stable and H200-oriented preprocess configurations."
+    )
+    parser.add_argument(
+        "--sam_apply_postprocessing",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable SAM2 postprocessing overrides such as dynamic multimask fallback and hole filling. Step 01 can disable this to isolate interaction-path crashes."
+    )
+    parser.add_argument(
+        "--sam_use_flash_attn",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Optional explicit override for the SAM2 transformer flash-attention path."
+    )
+    parser.add_argument(
+        "--sam_math_kernel_on",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Optional explicit override for the SAM2 transformer math-kernel path."
+    )
+    parser.add_argument(
+        "--sam_old_gpu_mode",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Optional explicit override for the SAM2 transformer old-GPU compatibility mode."
+    )
+    parser.add_argument(
+        "--sam_offload_video_to_cpu",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Optional explicit override for SAM2 frame offload to CPU during preprocess tracking."
+    )
+    parser.add_argument(
+        "--sam_offload_state_to_cpu",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Optional explicit override for SAM2 inference-state offload to CPU during preprocess tracking."
+    )
+    parser.add_argument(
+        "--sam_debug_trace",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Write per-chunk SAM2 runtime traces so native failures leave a usable last-known-good state on disk."
+    )
+    parser.add_argument(
+        "--sam_debug_trace_dir",
+        type=str,
+        default=None,
+        help="Optional directory for SAM2 debug traces. Defaults to <save_path>/sam2_debug when --sam_debug_trace is enabled."
+    )
+    parser.add_argument(
         "--soft_mask_mode",
         type=str,
         default="soft_band",
@@ -438,7 +500,19 @@ if __name__ == '__main__':
     sam2_checkpoint_path = os.path.join(args.ckpt_path, 'sam2/sam2_hiera_large.pt') if args.replace_flag else None
     flux_kontext_path = os.path.join(args.ckpt_path, 'FLUX.1-Kontext-dev') if args.use_flux else None
     from process_pipepline import ProcessPipeline
-    process_pipeline = ProcessPipeline(det_checkpoint_path=det_checkpoint_path, pose2d_checkpoint_path=pose2d_checkpoint_path, sam_checkpoint_path=sam2_checkpoint_path, flux_kontext_path=flux_kontext_path)
+    process_pipeline = ProcessPipeline(
+        det_checkpoint_path=det_checkpoint_path,
+        pose2d_checkpoint_path=pose2d_checkpoint_path,
+        sam_checkpoint_path=sam2_checkpoint_path,
+        flux_kontext_path=flux_kontext_path,
+        sam_apply_postprocessing=args.sam_apply_postprocessing,
+        sam_runtime_profile=args.sam_runtime_profile,
+        sam_use_flash_attn=args.sam_use_flash_attn,
+        sam_math_kernel_on=args.sam_math_kernel_on,
+        sam_old_gpu_mode=args.sam_old_gpu_mode,
+        sam_offload_video_to_cpu=args.sam_offload_video_to_cpu,
+        sam_offload_state_to_cpu=args.sam_offload_state_to_cpu,
+    )
     os.makedirs(args.save_path, exist_ok=True)
     if run_layout is not None:
         manifest_token = start_stage_manifest(
@@ -488,6 +562,9 @@ if __name__ == '__main__':
                                             sam_use_negative_points=args.sam_use_negative_points,
                                             sam_negative_margin=args.sam_negative_margin,
                                             sam_reprompt_interval=args.sam_reprompt_interval,
+                                            sam_prompt_mode=args.sam_prompt_mode,
+                                            sam_debug_trace=args.sam_debug_trace,
+                                            sam_debug_trace_dir=args.sam_debug_trace_dir,
                                             soft_mask_mode=args.soft_mask_mode,
                                             soft_mask_band_width=args.soft_mask_band_width,
                                             soft_mask_blur_kernel=args.soft_mask_blur_kernel,
@@ -563,6 +640,18 @@ if __name__ == '__main__':
                 "sam_use_negative_points": args.sam_use_negative_points,
                 "sam_negative_margin": args.sam_negative_margin,
                 "sam_reprompt_interval": args.sam_reprompt_interval,
+                "sam_prompt_mode": args.sam_prompt_mode,
+                "sam_runtime_profile": args.sam_runtime_profile,
+                "sam_apply_postprocessing": args.sam_apply_postprocessing,
+                "sam_use_flash_attn": args.sam_use_flash_attn,
+                "sam_math_kernel_on": args.sam_math_kernel_on,
+                "sam_old_gpu_mode": args.sam_old_gpu_mode,
+                "sam_offload_video_to_cpu": args.sam_offload_video_to_cpu,
+                "sam_offload_state_to_cpu": args.sam_offload_state_to_cpu,
+                "sam_debug_trace": args.sam_debug_trace,
+                "sam_debug_trace_dir": pipeline_outputs.get("sam_trace_dir"),
+                "sam_runtime_resolved": pipeline_outputs.get("sam_runtime", {}),
+                "sam_apply_postprocessing_resolved": pipeline_outputs.get("sam_apply_postprocessing"),
             },
             soft_mask_settings={
                 "soft_mask_mode": args.soft_mask_mode,
@@ -605,6 +694,8 @@ if __name__ == '__main__':
             if "qa_outputs" in pipeline_outputs:
                 for qa_name, qa_path in pipeline_outputs["qa_outputs"].items():
                     stage_outputs[qa_name] = str((output_dir / qa_path).resolve())
+            if pipeline_outputs.get("sam_trace_dir") is not None:
+                stage_outputs["sam_trace_dir"] = str(Path(pipeline_outputs["sam_trace_dir"]).resolve())
             finalize_stage_manifest(
                 run_layout,
                 manifest_token,
@@ -613,11 +704,15 @@ if __name__ == '__main__':
             )
     except Exception as exc:
         if manifest_token is not None:
+            failure_outputs = {"save_path": str(Path(args.save_path).resolve())}
+            trace_dir = Path(args.sam_debug_trace_dir) if args.sam_debug_trace_dir is not None else Path(args.save_path) / "sam2_debug"
+            if trace_dir.exists():
+                failure_outputs["sam_trace_dir"] = str(trace_dir.resolve())
             finalize_stage_manifest(
                 run_layout,
                 manifest_token,
                 status="failed",
-                outputs={"save_path": str(Path(args.save_path).resolve())},
+                outputs=failure_outputs,
                 error=str(exc),
             )
         raise
