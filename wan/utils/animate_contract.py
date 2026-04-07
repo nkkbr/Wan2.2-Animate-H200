@@ -93,6 +93,7 @@ def build_preprocess_metadata(
     intermediate_save_format: str = "mp4",
     lossless_intermediate: bool = False,
     control_stabilization: dict | None = None,
+    mask_generation: dict | None = None,
     qa_outputs: dict | None = None,
 ) -> dict:
     if src_files is None:
@@ -200,6 +201,7 @@ def build_preprocess_metadata(
                 "h_len": h_len,
             },
             "control_stabilization": control_stabilization or {},
+            "sam2_mask_generation": mask_generation or {},
         },
         "source_inputs": {
             "video_path": str(Path(video_path).resolve()),

@@ -28,7 +28,9 @@
 - `processing.save_format`: preprocess 请求的中间格式
 - `processing.lossless_intermediate`: 是否启用了推荐的高保真中间格式布局
 - `processing.control_stabilization`: face / pose 稳定化参数快照
+- `processing.sam2_mask_generation`: replacement 模式下 SAM2 chunk / prompt / negative-point 参数快照
 - `qa_outputs`: 可选的 QA overlay 与曲线产物
+  - 例如 `face_bbox_overlay`、`pose_overlay`、`mask_overlay`、`sam_prompts_overlay`、`mask_stats`
 
 ## `src_files`
 

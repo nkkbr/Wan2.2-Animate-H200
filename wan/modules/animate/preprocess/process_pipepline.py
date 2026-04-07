@@ -11,7 +11,7 @@ from PIL import Image
 from decord import VideoReader
 from pose2d import Pose2d
 from pose2d_utils import AAPoseMeta
-from utils import resize_by_area, get_frame_indices, padding_resize, get_face_bboxes, get_aug_mask, get_mask_body_img
+from utils import resize_by_area, get_frame_indices, padding_resize, get_aug_mask, get_mask_body_img
 from human_visualization import draw_aapose_by_meta_new
 from retarget_pose import get_retarget_pose
 from signal_stabilization import (
@@ -19,7 +19,15 @@ from signal_stabilization import (
     make_pose_overlay,
     stabilize_face_bboxes,
     stabilize_pose_metas,
-    write_json,
+    write_json as write_curve_json,
+)
+from sam_prompting import (
+    build_mask_stats,
+    make_mask_overlay,
+    make_sam_prompts_overlay,
+    plan_chunk_prompts,
+    write_json as write_mask_json,
+    write_prompt_keyframes,
 )
 import sam2.modeling.sam.transformer as transformer
 transformer.USE_FLASH_ATTN = False
@@ -77,6 +85,16 @@ class ProcessPipeline():
         pose_max_velocity_face=0.04,
         pose_interp_max_gap=3,
         export_qa_visuals=False,
+        sam_chunk_len=120,
+        sam_keyframes_per_chunk=8,
+        sam_prompt_body_conf_thresh=0.35,
+        sam_prompt_face_conf_thresh=0.45,
+        sam_prompt_hand_conf_thresh=0.35,
+        sam_prompt_face_min_points=8,
+        sam_prompt_hand_min_points=6,
+        sam_use_negative_points=True,
+        sam_negative_margin=0.08,
+        sam_reprompt_interval=40,
         iterations=3,
         k=7,
         w_len=1,
@@ -166,7 +184,20 @@ class ProcessPipeline():
                 canvas = np.zeros_like(refer_img)
                 conditioning_image = draw_aapose_by_meta_new(canvas, meta)
                 cond_images.append(conditioning_image)
-            masks = self.get_mask(frames, 400, tpl_pose_metas)
+            masks, mask_debug = self.get_mask(
+                frames,
+                kp2ds_all=tpl_pose_metas,
+                sam_chunk_len=sam_chunk_len,
+                sam_keyframes_per_chunk=sam_keyframes_per_chunk,
+                sam_prompt_body_conf_thresh=sam_prompt_body_conf_thresh,
+                sam_prompt_face_conf_thresh=sam_prompt_face_conf_thresh,
+                sam_prompt_hand_conf_thresh=sam_prompt_hand_conf_thresh,
+                sam_prompt_face_min_points=sam_prompt_face_min_points,
+                sam_prompt_hand_min_points=sam_prompt_hand_min_points,
+                sam_use_negative_points=sam_use_negative_points,
+                sam_negative_margin=sam_negative_margin,
+                sam_reprompt_interval=sam_reprompt_interval,
+            )
 
             bg_images = []
             aug_masks = []
@@ -204,13 +235,35 @@ class ProcessPipeline():
                     artifact_format="mp4",
                     fps=fps,
                 )
-                write_json(os.path.join(output_path, "face_bbox_curve.json"), face_bbox_curve)
-                write_json(os.path.join(output_path, "pose_conf_curve.json"), pose_conf_curve)
+                mask_overlay = make_mask_overlay(np.stack(frames).astype(np.uint8), masks, mask_debug["prompt_entries"])
+                prompt_overlay = make_sam_prompts_overlay(np.stack(frames).astype(np.uint8), mask_debug["prompt_entries"])
+                qa_mask_overlay = write_rgb_artifact(
+                    frames=mask_overlay,
+                    output_root=output_path,
+                    stem="mask_overlay",
+                    artifact_format="mp4",
+                    fps=fps,
+                )
+                qa_prompt_overlay = write_rgb_artifact(
+                    frames=prompt_overlay,
+                    output_root=output_path,
+                    stem="sam_prompts_overlay",
+                    artifact_format="mp4",
+                    fps=fps,
+                )
+                prompt_keyframes = write_prompt_keyframes(output_path, np.stack(frames).astype(np.uint8), mask_debug["prompt_entries"])
+                write_curve_json(os.path.join(output_path, "face_bbox_curve.json"), face_bbox_curve)
+                write_curve_json(os.path.join(output_path, "pose_conf_curve.json"), pose_conf_curve)
+                write_mask_json(os.path.join(output_path, "mask_stats.json"), mask_debug["mask_stats"])
                 qa_outputs = {
                     "face_bbox_overlay": qa_face_overlay["path"],
                     "pose_overlay": qa_pose_overlay["path"],
                     "face_bbox_curve": "face_bbox_curve.json",
                     "pose_conf_curve": "pose_conf_curve.json",
+                    "mask_overlay": qa_mask_overlay["path"],
+                    "sam_prompts_overlay": qa_prompt_overlay["path"],
+                    "sam_prompt_keyframes": prompt_keyframes["path"],
+                    "mask_stats": "mask_stats.json",
                 }
 
             src_files = {
@@ -417,8 +470,8 @@ class ProcessPipeline():
                     artifact_format="mp4",
                     fps=fps,
                 )
-                write_json(os.path.join(output_path, "face_bbox_curve.json"), face_bbox_curve)
-                write_json(os.path.join(output_path, "pose_conf_curve.json"), pose_conf_curve)
+                write_curve_json(os.path.join(output_path, "face_bbox_curve.json"), face_bbox_curve)
+                write_curve_json(os.path.join(output_path, "pose_conf_curve.json"), pose_conf_curve)
                 qa_outputs = {
                     "face_bbox_overlay": qa_face_overlay["path"],
                     "pose_overlay": qa_pose_overlay["path"],
@@ -511,55 +564,83 @@ class ProcessPipeline():
         return tpl_prompt, refer_prompt
     
 
-    def get_mask(self, frames, th_step, kp2ds_all):
+    def get_mask(
+        self,
+        frames,
+        *,
+        kp2ds_all,
+        sam_chunk_len,
+        sam_keyframes_per_chunk,
+        sam_prompt_body_conf_thresh,
+        sam_prompt_face_conf_thresh,
+        sam_prompt_hand_conf_thresh,
+        sam_prompt_face_min_points,
+        sam_prompt_hand_min_points,
+        sam_use_negative_points,
+        sam_negative_margin,
+        sam_reprompt_interval,
+    ):
         frame_num = len(frames)
-        if frame_num < th_step:
-            num_step = 1
-        else:
-            num_step = (frame_num + th_step) // th_step
+        th_step = max(1, int(sam_chunk_len))
+        num_step = max(1, (frame_num + th_step - 1) // th_step)
 
         all_mask = []
+        chunk_plans = []
+        global_prompt_entries = []
         for index in range(num_step):
-            each_frames = frames[index * th_step:(index + 1) * th_step]
-    
-            kp2ds = kp2ds_all[index * th_step:(index + 1) * th_step]
-            if len(each_frames) > 4:
-                key_frame_num = 4
-            elif 4 >= len(each_frames) > 0:
-                key_frame_num = 1
-            else:
+            start_frame = index * th_step
+            end_frame = min(frame_num, (index + 1) * th_step)
+            each_frames = frames[start_frame:end_frame]
+            kp2ds = kp2ds_all[start_frame:end_frame]
+            if len(each_frames) <= 0:
                 continue
 
-            key_frame_step = len(kp2ds) // key_frame_num
-            key_frame_index_list = list(range(0, len(kp2ds), key_frame_step))
-
-            key_points_index = [0, 1, 2, 5, 8, 11, 10, 13]
-            key_frame_body_points_list = []
-            for key_frame_index in key_frame_index_list:
-                keypoints_body_list = []
-                body_key_points = kp2ds[key_frame_index]['keypoints_body']
-                for each_index in key_points_index:
-                    each_keypoint = body_key_points[each_index]
-                    if None is each_keypoint:
-                        continue
-                    keypoints_body_list.append(each_keypoint)
-
-                keypoints_body = np.array(keypoints_body_list)[:, :2]
-                wh = np.array([[kp2ds[0]['width'], kp2ds[0]['height']]])
-                points = (keypoints_body * wh).astype(np.int32)
-                key_frame_body_points_list.append(points)
+            prompt_plan = plan_chunk_prompts(
+                kp2ds,
+                image_shape=(each_frames[0].shape[0], each_frames[0].shape[1]),
+                keyframes_per_chunk=sam_keyframes_per_chunk,
+                reprompt_interval=sam_reprompt_interval,
+                body_conf_thresh=sam_prompt_body_conf_thresh,
+                face_conf_thresh=sam_prompt_face_conf_thresh,
+                hand_conf_thresh=sam_prompt_hand_conf_thresh,
+                face_min_points=sam_prompt_face_min_points,
+                hand_min_points=sam_prompt_hand_min_points,
+                use_negative_points=sam_use_negative_points,
+                negative_margin=sam_negative_margin,
+            )
+            prompt_entries = prompt_plan["prompt_entries"]
+            if not prompt_entries:
+                fallback_x = each_frames[0].shape[1] // 2
+                fallback_y = each_frames[0].shape[0] // 2
+                prompt_entries = [
+                    {
+                        "frame_idx": 0,
+                        "tags": ["fallback"],
+                        "positive_points": np.asarray([[fallback_x, fallback_y]], dtype=np.int32),
+                        "negative_points": np.zeros((0, 2), dtype=np.int32),
+                        "points": np.asarray([[fallback_x, fallback_y]], dtype=np.int32),
+                        "labels": np.asarray([1], dtype=np.int32),
+                        "positive_count": 1,
+                        "negative_count": 0,
+                        "positive_sources": {"image_center_fallback": 1},
+                        "person_bbox": None,
+                    }
+                ]
+                prompt_plan["prompt_entries"] = prompt_entries
+                prompt_plan["prompt_frames"] = [0]
+                prompt_plan["reprompt_frames"] = []
 
             inference_state = self.predictor.init_state_v2(frames=each_frames)
             self.predictor.reset_state(inference_state)
             ann_obj_id = 1
-            for ann_frame_idx, points in zip(key_frame_index_list, key_frame_body_points_list):
-                labels = np.array([1] * points.shape[0], np.int32)
+            for prompt_entry in prompt_entries:
+                ann_frame_idx = prompt_entry["frame_idx"]
                 _, out_obj_ids, out_mask_logits = self.predictor.add_new_points(
                     inference_state=inference_state,
                     frame_idx=ann_frame_idx,
                     obj_id=ann_obj_id,
-                    points=points,
-                    labels=labels,
+                    points=prompt_entry["points"],
+                    labels=prompt_entry["labels"],
                 )
 
             video_segments = {}
@@ -569,12 +650,42 @@ class ProcessPipeline():
                     for i, out_obj_id in enumerate(out_obj_ids)
                 }
 
-            for out_frame_idx in range(len(video_segments)):
-                for out_obj_id, out_mask in video_segments[out_frame_idx].items():
+            for out_frame_idx in range(len(each_frames)):
+                segment_masks = video_segments.get(out_frame_idx, {})
+                if not segment_masks:
+                    all_mask.append(np.zeros(each_frames[0].shape[:2], dtype=np.uint8))
+                    continue
+                for out_obj_id, out_mask in segment_masks.items():
                     out_mask = out_mask[0].astype(np.uint8)
                     all_mask.append(out_mask)
+                    break
 
-        return all_mask
+            chunk_prompt_entries = []
+            for prompt_entry in prompt_entries:
+                global_entry = dict(prompt_entry)
+                global_entry["global_frame_idx"] = int(start_frame + prompt_entry["frame_idx"])
+                global_prompt_entries.append(global_entry)
+                chunk_prompt_entries.append(global_entry)
+            chunk_plans.append(
+                {
+                    "chunk_index": int(index),
+                    "start_frame": int(start_frame),
+                    "end_frame": int(end_frame - 1),
+                    "prompt_entries": chunk_prompt_entries,
+                    "reprompt_frames": prompt_plan["reprompt_frames"],
+                }
+            )
+        all_mask = np.stack(all_mask).astype(np.uint8)
+        mask_stats = build_mask_stats(
+            masks=all_mask,
+            chunk_plans=chunk_plans,
+            sam_chunk_len=sam_chunk_len,
+            sam_keyframes_per_chunk=sam_keyframes_per_chunk,
+            sam_reprompt_interval=sam_reprompt_interval,
+            sam_use_negative_points=sam_use_negative_points,
+            sam_negative_margin=sam_negative_margin,
+        )
+        return all_mask, {"prompt_entries": global_prompt_entries, "mask_stats": mask_stats}
     
     def convert_list_to_array(self, metas):
         metas_list = []

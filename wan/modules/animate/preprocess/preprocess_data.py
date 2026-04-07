@@ -204,7 +204,67 @@ def _parse_args():
         "--export_qa_visuals",
         action="store_true",
         default=False,
-        help="Export QA overlays and curve JSON files for stabilized face and pose controls."
+        help="Export QA overlays and JSON files for stabilized face/pose controls and SAM2 mask generation."
+    )
+    parser.add_argument(
+        "--sam_chunk_len",
+        type=int,
+        default=120,
+        help="Number of frames per SAM2 tracking chunk in replacement mode."
+    )
+    parser.add_argument(
+        "--sam_keyframes_per_chunk",
+        type=int,
+        default=8,
+        help="Number of uniformly sampled conditioning frames per SAM2 chunk."
+    )
+    parser.add_argument(
+        "--sam_prompt_body_conf_thresh",
+        type=float,
+        default=0.35,
+        help="Confidence threshold for body keypoints used as SAM2 positive prompts."
+    )
+    parser.add_argument(
+        "--sam_prompt_face_conf_thresh",
+        type=float,
+        default=0.45,
+        help="Confidence threshold for face keypoints used to derive the SAM2 face-center prompt."
+    )
+    parser.add_argument(
+        "--sam_prompt_hand_conf_thresh",
+        type=float,
+        default=0.35,
+        help="Confidence threshold for hand keypoints used to derive SAM2 hand-center prompts."
+    )
+    parser.add_argument(
+        "--sam_prompt_face_min_points",
+        type=int,
+        default=8,
+        help="Minimum number of valid face keypoints required before adding the SAM2 face-center prompt."
+    )
+    parser.add_argument(
+        "--sam_prompt_hand_min_points",
+        type=int,
+        default=6,
+        help="Minimum number of valid hand keypoints required before adding a SAM2 hand-center prompt."
+    )
+    parser.add_argument(
+        "--sam_use_negative_points",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable negative background points around the person bbox for SAM2 prompting."
+    )
+    parser.add_argument(
+        "--sam_negative_margin",
+        type=float,
+        default=0.08,
+        help="Margin ratio used to place negative SAM2 prompts outside the person bbox."
+    )
+    parser.add_argument(
+        "--sam_reprompt_interval",
+        type=int,
+        default=40,
+        help="Additional fixed-interval SAM2 re-prompt spacing within each chunk. Set to 0 to disable."
     )
 
     parser.add_argument(
@@ -323,6 +383,16 @@ if __name__ == '__main__':
                                             pose_max_velocity_face=args.pose_max_velocity_face,
                                             pose_interp_max_gap=args.pose_interp_max_gap,
                                             export_qa_visuals=args.export_qa_visuals,
+                                            sam_chunk_len=args.sam_chunk_len,
+                                            sam_keyframes_per_chunk=args.sam_keyframes_per_chunk,
+                                            sam_prompt_body_conf_thresh=args.sam_prompt_body_conf_thresh,
+                                            sam_prompt_face_conf_thresh=args.sam_prompt_face_conf_thresh,
+                                            sam_prompt_hand_conf_thresh=args.sam_prompt_hand_conf_thresh,
+                                            sam_prompt_face_min_points=args.sam_prompt_face_min_points,
+                                            sam_prompt_hand_min_points=args.sam_prompt_hand_min_points,
+                                            sam_use_negative_points=args.sam_use_negative_points,
+                                            sam_negative_margin=args.sam_negative_margin,
+                                            sam_reprompt_interval=args.sam_reprompt_interval,
                                             iterations=args.iterations,
                                             k=args.k,
                                             w_len=args.w_len,
@@ -372,6 +442,18 @@ if __name__ == '__main__':
                 "pose_max_velocity_face": args.pose_max_velocity_face,
                 "pose_interp_max_gap": args.pose_interp_max_gap,
                 "export_qa_visuals": args.export_qa_visuals,
+            },
+            mask_generation={
+                "sam_chunk_len": args.sam_chunk_len,
+                "sam_keyframes_per_chunk": args.sam_keyframes_per_chunk,
+                "sam_prompt_body_conf_thresh": args.sam_prompt_body_conf_thresh,
+                "sam_prompt_face_conf_thresh": args.sam_prompt_face_conf_thresh,
+                "sam_prompt_hand_conf_thresh": args.sam_prompt_hand_conf_thresh,
+                "sam_prompt_face_min_points": args.sam_prompt_face_min_points,
+                "sam_prompt_hand_min_points": args.sam_prompt_hand_min_points,
+                "sam_use_negative_points": args.sam_use_negative_points,
+                "sam_negative_margin": args.sam_negative_margin,
+                "sam_reprompt_interval": args.sam_reprompt_interval,
             },
             qa_outputs=pipeline_outputs.get("qa_outputs", {}),
         )

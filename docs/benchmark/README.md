@@ -85,6 +85,10 @@ lossless roundtrip 检查脚本见：
 
 - `scripts/eval/check_control_stability.py`
 
+SAM2 mask prompt / QA 检查脚本见：
+
+- `scripts/eval/check_sam_prompting.py`
+
 ## 7. 后续建议
 
 后续应把外部 benchmark 素材逐步补充到统一 manifest 中，并且每个新增素材都附带：
