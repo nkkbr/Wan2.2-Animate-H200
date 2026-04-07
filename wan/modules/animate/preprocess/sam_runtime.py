@@ -22,11 +22,51 @@ SAM_RUNTIME_PROFILES = {
         "offload_state_to_cpu": False,
     },
     "h200_aggressive": {
-        "use_flash_attn": True,
-        "math_kernel_on": False,
+        "use_flash_attn": False,
+        "math_kernel_on": True,
         "old_gpu": False,
         "offload_video_to_cpu": False,
         "offload_state_to_cpu": False,
+    },
+}
+
+
+PREPROCESS_RUNTIME_PROFILES = {
+    "legacy_safe": {
+        "preprocess_runtime_profile": "legacy_safe",
+        "sam_runtime_profile": "legacy_safe",
+        "analysis_resolution_area": None,
+        "analysis_min_short_side": None,
+        "sam_apply_postprocessing": True,
+        "sam_chunk_len": 120,
+        "sam_keyframes_per_chunk": 8,
+        "sam_use_negative_points": True,
+        "sam_reprompt_interval": 40,
+        "sam_prompt_mode": "points",
+    },
+    "h200_safe": {
+        "preprocess_runtime_profile": "h200_safe",
+        "sam_runtime_profile": "h200_safe",
+        "analysis_resolution_area": [832, 480],
+        "analysis_min_short_side": 480,
+        "sam_apply_postprocessing": False,
+        "sam_chunk_len": 20,
+        "sam_keyframes_per_chunk": 4,
+        "sam_use_negative_points": False,
+        "sam_reprompt_interval": 0,
+        "sam_prompt_mode": "mask_seed",
+    },
+    "h200_aggressive": {
+        "preprocess_runtime_profile": "h200_aggressive",
+        "sam_runtime_profile": "h200_aggressive",
+        "analysis_resolution_area": [1280, 720],
+        "analysis_min_short_side": 720,
+        "sam_apply_postprocessing": False,
+        "sam_chunk_len": 60,
+        "sam_keyframes_per_chunk": 6,
+        "sam_use_negative_points": False,
+        "sam_reprompt_interval": 0,
+        "sam_prompt_mode": "mask_seed",
     },
 }
 
@@ -57,6 +97,20 @@ def resolve_sam_runtime_profile(
     for key, value in overrides.items():
         if value is not None:
             config[key] = bool(value)
+    return config
+
+
+def resolve_preprocess_runtime_profile(profile_name="legacy_safe"):
+    if profile_name not in PREPROCESS_RUNTIME_PROFILES:
+        raise ValueError(
+            f"Unsupported preprocess runtime profile: {profile_name}. "
+            f"Expected one of {sorted(PREPROCESS_RUNTIME_PROFILES)}."
+        )
+    config = deepcopy(PREPROCESS_RUNTIME_PROFILES[profile_name])
+    if config["analysis_resolution_area"] is not None:
+        config["analysis_resolution_area"] = [int(config["analysis_resolution_area"][0]), int(config["analysis_resolution_area"][1])]
+    if config["analysis_min_short_side"] is not None:
+        config["analysis_min_short_side"] = int(config["analysis_min_short_side"])
     return config
 
 

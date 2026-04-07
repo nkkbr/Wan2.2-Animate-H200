@@ -1,5 +1,6 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import os
+import time
 import numpy as np
 import torch
 from diffusers import FluxKontextPipeline
@@ -103,6 +104,8 @@ class ProcessPipeline():
         refer_image_path,
         output_path,
         resolution_area=[1280, 720],
+        analysis_resolution_area=None,
+        analysis_min_short_side=None,
         fps=30,
         save_format="mp4",
         lossless_intermediate=False,
@@ -161,6 +164,9 @@ class ProcessPipeline():
         replace_flag=False,
     ):
         if replace_flag:
+            runtime_stage_seconds = {}
+            overall_start = time.perf_counter()
+            self._reset_peak_memory_stats()
 
             video_reader = VideoReader(video_path)
             frame_num = len(video_reader)
@@ -184,14 +190,43 @@ class ProcessPipeline():
             target_num = int(frame_num / video_fps * fps)
             print('target_num: {}'.format(target_num))
             idxs = get_frame_indices(frame_num, video_fps, target_num, fps)
-            frames = video_reader.get_batch(idxs).asnumpy()
-            validate_rgb_video("replacement input video", frames)
+            resize_start = time.perf_counter()
+            raw_frames = video_reader.get_batch(idxs).asnumpy()
+            validate_rgb_video("replacement input video", raw_frames)
 
-            frames = [resize_by_area(frame, resolution_area[0] * resolution_area[1], divisor=16) for frame in frames]
-            height, width = frames[0].shape[:2]
+            export_target_area = int(resolution_area[0] * resolution_area[1])
+            if analysis_resolution_area is None:
+                analysis_resolution_area = list(resolution_area)
+            analysis_target_area = int(analysis_resolution_area[0] * analysis_resolution_area[1])
+
+            export_frames = [
+                self._resize_frame_with_analysis_policy(
+                    frame,
+                    target_area=export_target_area,
+                    min_short_side=None,
+                    divisor=16,
+                )
+                for frame in raw_frames
+            ]
+            height, width = export_frames[0].shape[:2]
+            if analysis_target_area == export_target_area and analysis_min_short_side is None:
+                analysis_frames = export_frames
+            else:
+                analysis_frames = [
+                    self._resize_frame_with_analysis_policy(
+                        frame,
+                        target_area=analysis_target_area,
+                        min_short_side=analysis_min_short_side,
+                        divisor=16,
+                    )
+                    for frame in raw_frames
+                ]
+            analysis_height, analysis_width = analysis_frames[0].shape[:2]
+            runtime_stage_seconds["load_and_resize"] = time.perf_counter() - resize_start
             logger.info(f"Processing pose meta")
 
-            raw_pose_metas = self.pose2d(frames)
+            pose_start = time.perf_counter()
+            raw_pose_metas = self.pose2d(analysis_frames)
             tpl_pose_metas, pose_conf_curve = stabilize_pose_metas(
                 raw_pose_metas,
                 method=pose_smooth_method,
@@ -208,7 +243,7 @@ class ProcessPipeline():
             )
             face_bboxes, face_bbox_curve = stabilize_face_bboxes(
                 tpl_pose_metas,
-                image_shape=(height, width),
+                image_shape=(analysis_height, analysis_width),
                 scale=1.3,
                 conf_thresh=face_conf_thresh,
                 min_valid_points=face_min_valid_points,
@@ -222,11 +257,13 @@ class ProcessPipeline():
             face_images = []
             for idx, face_bbox_for_image in enumerate(face_bboxes):
                 x1, x2, y1, y2 = face_bbox_for_image
-                face_image = frames[idx][y1:y2, x1:x2]
+                face_image = analysis_frames[idx][y1:y2, x1:x2]
                 face_image = cv2.resize(face_image, (512, 512))
                 face_images.append(face_image)
+            runtime_stage_seconds["pose_face_controls"] = time.perf_counter() - pose_start
 
             logger.info(f"Processing reference image: {refer_image_path}")
+            reference_start = time.perf_counter()
             refer_img = load_image_rgb(refer_image_path)
             src_ref_path = os.path.join(output_path, 'src_ref.png')
             write_reference_image(src_ref_path, refer_img)
@@ -253,9 +290,10 @@ class ProcessPipeline():
                 "reference_bbox_original": None,
             }
             if reference_normalization_mode == "bbox_match":
-                reference_detection_img = resize_by_area(
+                reference_detection_img = self._resize_frame_with_analysis_policy(
                     refer_img,
-                    resolution_area[0] * resolution_area[1],
+                    target_area=analysis_target_area,
+                    min_short_side=analysis_min_short_side,
                     divisor=16,
                 )
                 reference_pose_meta = self.pose2d([reference_detection_img])[0]
@@ -285,10 +323,17 @@ class ProcessPipeline():
                     "reference_bbox_detection": None if reference_bbox_detection is None else [float(v) for v in reference_bbox_detection.tolist()],
                     "reference_bbox_original": None if reference_bbox_original is None else [float(v) for v in reference_bbox_original.tolist()],
                 })
+                driver_target_bbox_export = driver_target_bbox
+                if driver_target_bbox is not None and (analysis_height != height or analysis_width != width):
+                    driver_target_bbox_export = scale_bbox_between_shapes(
+                        driver_target_bbox,
+                        from_shape=(analysis_height, analysis_width),
+                        to_shape=(height, width),
+                    )
                 normalized_reference, normalization_stats = normalize_reference_image(
                     refer_img,
                     reference_bbox=reference_bbox_original,
-                    target_bbox=driver_target_bbox,
+                    target_bbox=driver_target_bbox_export,
                     canvas_shape=(height, width),
                     scale_clamp_min=reference_scale_clamp_min,
                     scale_clamp_max=reference_scale_clamp_max,
@@ -309,6 +354,7 @@ class ProcessPipeline():
                 })
                 active_reference_path = "src_ref.png"
                 active_reference_image = refer_img
+            runtime_stage_seconds["reference_conditioning"] = time.perf_counter() - reference_start
 
             reference_height, reference_width = active_reference_image.shape[:2]
             refer_canvas = active_reference_image
@@ -330,8 +376,10 @@ class ProcessPipeline():
                     {
                         "stage": "session_started",
                         "video_path": video_path,
-                        "frame_count": int(len(frames)),
-                        "frame_shape": list(frames[0].shape),
+                        "frame_count": int(len(export_frames)),
+                        "frame_shape": list(analysis_frames[0].shape),
+                        "analysis_shape": [int(analysis_height), int(analysis_width)],
+                        "export_shape": [int(height), int(width)],
                         "sam_runtime_profile": self.sam_runtime_config,
                         "sam_settings": {
                             "sam_chunk_len": int(sam_chunk_len),
@@ -342,15 +390,18 @@ class ProcessPipeline():
                             "sam_prompt_face_min_points": int(sam_prompt_face_min_points),
                             "sam_prompt_hand_min_points": int(sam_prompt_hand_min_points),
                             "sam_use_negative_points": bool(sam_use_negative_points),
-                        "sam_negative_margin": float(sam_negative_margin),
-                        "sam_reprompt_interval": int(sam_reprompt_interval),
-                        "sam_prompt_mode": sam_prompt_mode,
-                        "sam_apply_postprocessing": bool(self.sam_apply_postprocessing),
+                            "sam_negative_margin": float(sam_negative_margin),
+                            "sam_reprompt_interval": int(sam_reprompt_interval),
+                            "sam_prompt_mode": sam_prompt_mode,
+                            "sam_apply_postprocessing": bool(self.sam_apply_postprocessing),
+                            "analysis_resolution_area": [int(analysis_resolution_area[0]), int(analysis_resolution_area[1])],
+                            "analysis_min_short_side": None if analysis_min_short_side is None else int(analysis_min_short_side),
+                        },
                     },
-                },
-            )
+                )
+            sam_start = time.perf_counter()
             masks, mask_debug = self.get_mask(
-                frames,
+                analysis_frames,
                 kp2ds_all=tpl_pose_metas,
                 sam_chunk_len=sam_chunk_len,
                 sam_keyframes_per_chunk=sam_keyframes_per_chunk,
@@ -366,11 +417,16 @@ class ProcessPipeline():
                 sam_debug_trace=sam_debug_trace,
                 sam_debug_trace_dir=trace_dir,
             )
+            runtime_stage_seconds["sam_mask_generation"] = time.perf_counter() - sam_start
+            analysis_masks = masks
+            if analysis_height != height or analysis_width != width:
+                masks = self._resize_mask_frames(masks, (height, width))
 
+            mask_post_start = time.perf_counter()
             hole_bg_images = []
             aug_masks = []
 
-            for frame, mask in zip(frames, masks):
+            for frame, mask in zip(export_frames, masks):
                 if iterations > 0:
                     _, each_mask = get_mask_body_img(frame, mask, iterations=iterations, k=k)
                     each_aug_mask = get_aug_mask(each_mask, w_len=w_len, h_len=h_len)
@@ -385,6 +441,7 @@ class ProcessPipeline():
             cond_images = np.stack(cond_images).astype(np.uint8)
             hole_bg_images = np.stack(hole_bg_images).astype(np.uint8)
             aug_masks = np.stack(aug_masks).astype(np.float32)
+            runtime_stage_seconds["mask_postprocess"] = time.perf_counter() - mask_post_start
             soft_band_masks = None
             if soft_mask_mode != "none":
                 soft_band_masks = build_soft_boundary_band(
@@ -392,8 +449,9 @@ class ProcessPipeline():
                     band_width=soft_mask_band_width,
                     blur_kernel_size=soft_mask_blur_kernel,
                 ).astype(np.float32)
+            background_start = time.perf_counter()
             bg_images, background_debug = build_clean_plate_background(
-                np.stack(frames).astype(np.uint8),
+                np.stack(export_frames).astype(np.uint8),
                 aug_masks,
                 bg_inpaint_mode=bg_inpaint_mode,
                 soft_band=soft_band_masks,
@@ -403,10 +461,12 @@ class ProcessPipeline():
                 bg_temporal_smooth_strength=bg_temporal_smooth_strength,
             )
             bg_images = np.stack(bg_images).astype(np.uint8)
+            runtime_stage_seconds["background_clean_plate"] = time.perf_counter() - background_start
             qa_outputs = {}
             if export_qa_visuals:
-                face_bbox_overlay = make_face_bbox_overlay(np.stack(frames).astype(np.uint8), face_bboxes, face_bbox_curve)
-                pose_overlay = make_pose_overlay(np.stack(frames).astype(np.uint8), tpl_pose_metas)
+                qa_start = time.perf_counter()
+                face_bbox_overlay = make_face_bbox_overlay(np.stack(analysis_frames).astype(np.uint8), face_bboxes, face_bbox_curve)
+                pose_overlay = make_pose_overlay(np.stack(export_frames).astype(np.uint8), tpl_pose_metas)
                 qa_face_overlay = write_rgb_artifact(
                     frames=face_bbox_overlay,
                     output_root=output_path,
@@ -421,8 +481,8 @@ class ProcessPipeline():
                     artifact_format="mp4",
                     fps=fps,
                 )
-                mask_overlay = make_mask_overlay(np.stack(frames).astype(np.uint8), masks, mask_debug["prompt_entries"])
-                prompt_overlay = make_sam_prompts_overlay(np.stack(frames).astype(np.uint8), mask_debug["prompt_entries"])
+                mask_overlay = make_mask_overlay(np.stack(analysis_frames).astype(np.uint8), analysis_masks, mask_debug["prompt_entries"])
+                prompt_overlay = make_sam_prompts_overlay(np.stack(analysis_frames).astype(np.uint8), mask_debug["prompt_entries"])
                 qa_mask_overlay = write_rgb_artifact(
                     frames=mask_overlay,
                     output_root=output_path,
@@ -437,7 +497,7 @@ class ProcessPipeline():
                     artifact_format="mp4",
                     fps=fps,
                 )
-                prompt_keyframes = write_prompt_keyframes(output_path, np.stack(frames).astype(np.uint8), mask_debug["prompt_entries"])
+                prompt_keyframes = write_prompt_keyframes(output_path, np.stack(analysis_frames).astype(np.uint8), mask_debug["prompt_entries"])
                 write_curve_json(os.path.join(output_path, "face_bbox_curve.json"), face_bbox_curve)
                 write_curve_json(os.path.join(output_path, "pose_conf_curve.json"), pose_conf_curve)
                 write_mask_json(os.path.join(output_path, "mask_stats.json"), mask_debug["mask_stats"])
@@ -514,7 +574,9 @@ class ProcessPipeline():
                     preview_path = os.path.join(output_path, "reference_normalization_preview.png")
                     write_reference_image(preview_path, preview)
                     qa_outputs["reference_normalization_preview"] = "reference_normalization_preview.png"
+                runtime_stage_seconds["qa_artifacts"] = time.perf_counter() - qa_start
 
+            write_start = time.perf_counter()
             src_files = {
                 "pose": write_rgb_artifact(
                     frames=cond_images,
@@ -582,11 +644,24 @@ class ProcessPipeline():
                     mask_semantics=SOFT_BAND_SEMANTICS,
                 )
             src_files["background"]["background_mode"] = background_debug["background_mode"]
+            runtime_stage_seconds["write_outputs"] = time.perf_counter() - write_start
+            runtime_stage_seconds["total"] = time.perf_counter() - overall_start
+            runtime_stats, runtime_metrics = self._summarize_runtime_stats(
+                stage_seconds=runtime_stage_seconds,
+                sam_chunk_stats=mask_debug.get("sam_chunk_stats", []),
+                export_shape=(height, width),
+                analysis_shape=(analysis_height, analysis_width),
+                frame_count=len(export_frames),
+                fps=float(fps),
+                preprocess_runtime_profile=self.sam_runtime_config.get("profile_name"),
+            )
             outputs = {
-                "frame_count": len(frames),
+                "frame_count": len(export_frames),
                 "fps": float(fps),
                 "height": int(height),
                 "width": int(width),
+                "analysis_height": int(analysis_height),
+                "analysis_width": int(analysis_width),
                 "channels": 3,
                 "reference_height": int(reference_height),
                 "reference_width": int(reference_width),
@@ -595,6 +670,8 @@ class ProcessPipeline():
                 "sam_runtime": dict(self.sam_runtime_config),
                 "sam_apply_postprocessing": bool(self.sam_apply_postprocessing),
                 "sam_trace_dir": str(trace_dir) if trace_dir is not None else None,
+                "runtime_stats": runtime_stats,
+                "runtime_metrics": runtime_metrics,
             }
             if qa_outputs:
                 outputs["qa_outputs"] = qa_outputs
@@ -867,7 +944,10 @@ class ProcessPipeline():
         all_mask = []
         chunk_plans = []
         global_prompt_entries = []
+        sam_chunk_stats = []
         for index in range(num_step):
+            chunk_start_time = time.perf_counter()
+            self._reset_peak_memory_stats()
             start_frame = index * th_step
             end_frame = min(frame_num, (index + 1) * th_step)
             each_frames = frames[start_frame:end_frame]
@@ -942,6 +1022,7 @@ class ProcessPipeline():
                 write_chunk_trace(sam_debug_trace_dir, index, chunk_trace)
 
             try:
+                init_state_start = time.perf_counter()
                 chunk_trace["stage"] = "before_init_state"
                 if sam_debug_trace and sam_debug_trace_dir is not None:
                     write_chunk_trace(sam_debug_trace_dir, index, chunk_trace)
@@ -952,10 +1033,12 @@ class ProcessPipeline():
                 )
                 chunk_trace["stage"] = "after_init_state"
                 chunk_trace["inference_num_frames"] = int(inference_state["num_frames"])
+                chunk_trace["init_state_seconds"] = float(time.perf_counter() - init_state_start)
                 if sam_debug_trace and sam_debug_trace_dir is not None:
                     write_chunk_trace(sam_debug_trace_dir, index, chunk_trace)
                 self.predictor.reset_state(inference_state)
                 ann_obj_id = 1
+                prompt_seconds = 0.0
                 for prompt_offset, prompt_entry in enumerate(prompt_entries):
                     ann_frame_idx = prompt_entry["frame_idx"]
                     chunk_trace["stage"] = "before_add_new_points" if sam_prompt_mode == "points" else "before_add_new_mask"
@@ -963,6 +1046,7 @@ class ProcessPipeline():
                     chunk_trace["current_prompt_frame_idx"] = int(ann_frame_idx)
                     if sam_debug_trace and sam_debug_trace_dir is not None:
                         write_chunk_trace(sam_debug_trace_dir, index, chunk_trace)
+                    prompt_start = time.perf_counter()
                     if sam_prompt_mode == "mask_seed":
                         seed_mask = self._build_seed_mask(
                             prompt_entry,
@@ -986,11 +1070,14 @@ class ProcessPipeline():
                         )
                         chunk_trace["stage"] = "after_add_new_points"
                         chunk_trace["current_prompt_mode"] = "points"
+                    prompt_seconds += time.perf_counter() - prompt_start
                     chunk_trace["current_prompt_obj_count"] = int(len(out_obj_ids))
                     chunk_trace["current_prompt_mask_logits_shape"] = list(out_mask_logits.shape)
+                    chunk_trace["prompt_seconds_so_far"] = float(prompt_seconds)
                     if sam_debug_trace and sam_debug_trace_dir is not None:
                         write_chunk_trace(sam_debug_trace_dir, index, chunk_trace)
 
+                propagate_start = time.perf_counter()
                 chunk_trace["stage"] = "before_propagate"
                 if sam_debug_trace and sam_debug_trace_dir is not None:
                     write_chunk_trace(sam_debug_trace_dir, index, chunk_trace)
@@ -1003,11 +1090,17 @@ class ProcessPipeline():
                 chunk_trace["stage"] = "after_propagate"
                 chunk_trace["video_segments_count"] = int(len(video_segments))
                 chunk_trace["video_segments_nonempty_count"] = int(sum(1 for value in video_segments.values() if value))
+                chunk_trace["propagate_seconds"] = float(time.perf_counter() - propagate_start)
+                chunk_trace["prompt_seconds_total"] = float(prompt_seconds)
+                chunk_trace["peak_memory_gb"] = float(self._peak_memory_gb())
+                chunk_trace["total_seconds"] = float(time.perf_counter() - chunk_start_time)
                 if sam_debug_trace and sam_debug_trace_dir is not None:
                     write_chunk_trace(sam_debug_trace_dir, index, chunk_trace)
             except Exception as exc:
                 chunk_trace["stage"] = "failed"
                 chunk_trace["error"] = str(exc)
+                chunk_trace["peak_memory_gb"] = float(self._peak_memory_gb())
+                chunk_trace["total_seconds"] = float(time.perf_counter() - chunk_start_time)
                 if sam_debug_trace and sam_debug_trace_dir is not None:
                     write_chunk_trace(sam_debug_trace_dir, index, chunk_trace)
                 raise
@@ -1037,6 +1130,20 @@ class ProcessPipeline():
                     "reprompt_frames": prompt_plan["reprompt_frames"],
                 }
             )
+            sam_chunk_stats.append(
+                {
+                    "chunk_index": int(index),
+                    "start_frame": int(start_frame),
+                    "end_frame": int(end_frame - 1),
+                    "frame_count": int(len(each_frames)),
+                    "init_state_seconds": float(chunk_trace.get("init_state_seconds", 0.0)),
+                    "prompt_seconds": float(chunk_trace.get("prompt_seconds_total", 0.0)),
+                    "propagate_seconds": float(chunk_trace.get("propagate_seconds", 0.0)),
+                    "total_seconds": float(chunk_trace.get("total_seconds", 0.0)),
+                    "peak_memory_gb": float(chunk_trace.get("peak_memory_gb", 0.0)),
+                    "prompt_count": int(len(prompt_entries)),
+                }
+            )
         all_mask = np.stack(all_mask).astype(np.uint8)
         mask_stats = build_mask_stats(
             masks=all_mask,
@@ -1064,6 +1171,7 @@ class ProcessPipeline():
             "mask_stats": mask_stats,
             "sam_trace_dir": str(sam_debug_trace_dir) if sam_debug_trace_dir is not None else None,
             "sam_runtime_profile": dict(self.sam_runtime_config),
+            "sam_chunk_stats": sam_chunk_stats,
         }
     
     def _validate_chunk_frames(self, frames, chunk_index):
@@ -1135,6 +1243,69 @@ class ProcessPipeline():
             fallback_y = height // 2
             cv2.circle(seed_mask, (fallback_x, fallback_y), max(3, min(height, width) // 64), 1, thickness=-1)
         return seed_mask.astype(bool)
+
+    def _reset_peak_memory_stats(self):
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+
+    def _peak_memory_gb(self):
+        if not torch.cuda.is_available():
+            return 0.0
+        return float(torch.cuda.max_memory_allocated() / (1024 ** 3))
+
+    def _resize_frame_with_analysis_policy(self, frame, *, target_area, min_short_side=None, divisor=16):
+        resized = resize_by_area(frame, target_area, divisor=divisor)
+        if min_short_side is None or min(resized.shape[:2]) >= min_short_side:
+            return resized
+        orig_h, orig_w = frame.shape[:2]
+        if orig_h <= orig_w:
+            new_h = int(min_short_side)
+            new_w = int(round(orig_w * (new_h / orig_h)))
+        else:
+            new_w = int(min_short_side)
+            new_h = int(round(orig_h * (new_w / orig_w)))
+        new_h = max(divisor, int(np.ceil(new_h / divisor) * divisor))
+        new_w = max(divisor, int(np.ceil(new_w / divisor) * divisor))
+        interpolation = cv2.INTER_AREA if (new_w * new_h < orig_w * orig_h) else cv2.INTER_LINEAR
+        return padding_resize(frame, height=new_h, width=new_w, interpolation=interpolation)
+
+    def _resize_mask_frames(self, mask_frames, target_shape):
+        target_h, target_w = target_shape
+        resized_masks = []
+        for mask in mask_frames:
+            resized = cv2.resize(mask.astype(np.float32), (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+            resized_masks.append((resized >= 0.5).astype(np.uint8))
+        return np.stack(resized_masks).astype(np.uint8)
+
+    def _summarize_runtime_stats(self, *, stage_seconds, sam_chunk_stats, export_shape, analysis_shape, frame_count, fps, preprocess_runtime_profile):
+        chunk_seconds = [float(chunk["total_seconds"]) for chunk in sam_chunk_stats]
+        chunk_peak_memory_gb = [float(chunk["peak_memory_gb"]) for chunk in sam_chunk_stats]
+        runtime_stats = {
+            "preprocess_runtime_profile": preprocess_runtime_profile,
+            "frame_count": int(frame_count),
+            "fps": float(fps),
+            "export_shape": [int(export_shape[0]), int(export_shape[1])],
+            "analysis_shape": [int(analysis_shape[0]), int(analysis_shape[1])],
+            "stage_seconds": {key: float(value) for key, value in stage_seconds.items()},
+            "sam_chunk_stats": sam_chunk_stats,
+            "sam_chunk_count": int(len(sam_chunk_stats)),
+            "sam_chunk_seconds_mean": float(np.mean(chunk_seconds)) if chunk_seconds else 0.0,
+            "sam_chunk_seconds_max": float(np.max(chunk_seconds)) if chunk_seconds else 0.0,
+            "sam_chunk_peak_memory_gb_max": float(np.max(chunk_peak_memory_gb)) if chunk_peak_memory_gb else 0.0,
+            "peak_memory_gb": float(self._peak_memory_gb()),
+        }
+        runtime_metrics = {
+            "preprocess_total_seconds": runtime_stats["stage_seconds"].get("total", 0.0),
+            "preprocess_peak_memory_gb": runtime_stats["peak_memory_gb"],
+            "sam_chunk_seconds_mean": runtime_stats["sam_chunk_seconds_mean"],
+            "sam_chunk_seconds_max": runtime_stats["sam_chunk_seconds_max"],
+            "sam_chunk_peak_memory_gb_max": runtime_stats["sam_chunk_peak_memory_gb_max"],
+            "analysis_height": int(analysis_shape[0]),
+            "analysis_width": int(analysis_shape[1]),
+            "export_height": int(export_shape[0]),
+            "export_width": int(export_shape[1]),
+        }
+        return runtime_stats, runtime_metrics
 
     def convert_list_to_array(self, metas):
         metas_list = []

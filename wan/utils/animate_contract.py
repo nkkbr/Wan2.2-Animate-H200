@@ -83,6 +83,7 @@ def build_preprocess_metadata(
     retarget_flag: bool,
     use_flux: bool,
     resolution_area: list[int] | tuple[int, int],
+    analysis_settings: dict | None = None,
     fps_request: int,
     fps_output: float,
     frame_count: int,
@@ -102,6 +103,7 @@ def build_preprocess_metadata(
     soft_mask_settings: dict | None = None,
     background_settings: dict | None = None,
     reference_settings: dict | None = None,
+    runtime_stats: dict | None = None,
     qa_outputs: dict | None = None,
 ) -> dict:
     if src_files is None:
@@ -200,6 +202,7 @@ def build_preprocess_metadata(
         } if replace_flag else {},
         "processing": {
             "resolution_area": list(resolution_area),
+            "analysis": analysis_settings or {},
             "fps_request": fps_request,
             "save_format": intermediate_save_format,
             "lossless_intermediate": bool(lossless_intermediate),
@@ -215,6 +218,7 @@ def build_preprocess_metadata(
             "background": background_settings or {},
             "reference_normalization": reference_settings or {},
         },
+        "runtime": runtime_stats or {},
         "source_inputs": {
             "video_path": str(Path(video_path).resolve()),
             "refer_image_path": str(Path(refer_image_path).resolve()),

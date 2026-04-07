@@ -1,6 +1,7 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import os
 import argparse
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,7 @@ from wan.utils.experiment import (
 )
 from wan.utils.animate_contract import build_preprocess_metadata, write_preprocess_metadata
 from wan.utils.media_io import INTERMEDIATE_SAVE_FORMATS
+from sam_runtime import resolve_preprocess_runtime_profile
 
 
 def _parse_args():
@@ -65,11 +67,31 @@ def _parse_args():
     )
     
     parser.add_argument(
+        "--preprocess_runtime_profile",
+        type=str,
+        default="legacy_safe",
+        choices=["legacy_safe", "h200_safe", "h200_aggressive"],
+        help="High-level preprocess runtime profile. This controls default SAM runtime, analysis resolution, chunking, prompting, and postprocessing settings unless explicitly overridden."
+    )
+    parser.add_argument(
         "--resolution_area",
         type=int,
         nargs=2,
         default=[1280, 720],
-        help="The target resolution for processing, specified as [width, height]. To handle different aspect ratios, the video is resized to have a total area equivalent to width * height, while preserving the original aspect ratio."
+        help="Export/output resolution for preprocess artifacts, specified as [width, height]. Detection, SAM2, and related analysis may run at a different analysis resolution."
+    )
+    parser.add_argument(
+        "--analysis_resolution_area",
+        type=int,
+        nargs=2,
+        default=None,
+        help="Optional analysis resolution [width, height] used for pose detection, prompt planning, SAM2, and related internal preprocessing. Defaults to the selected preprocess runtime profile."
+    )
+    parser.add_argument(
+        "--analysis_min_short_side",
+        type=int,
+        default=None,
+        help="Optional minimum short side for the internal analysis resolution. Useful for H200 profiles that should preserve more detail than export resolution alone would provide."
     )
     parser.add_argument(
         "--fps",
@@ -461,15 +483,34 @@ def _parse_args():
     )
     args = parser.parse_args()
 
-    return args
+    return args, parser
+
+
+def _apply_preprocess_runtime_profile_defaults(args, parser):
+    profile_defaults = resolve_preprocess_runtime_profile(args.preprocess_runtime_profile)
+    for field, value in profile_defaults.items():
+        if field == "preprocess_runtime_profile":
+            continue
+        if not hasattr(args, field):
+            continue
+        current_value = getattr(args, field)
+        default_value = parser.get_default(field)
+        if current_value == default_value or (current_value is None and default_value is None):
+            setattr(args, field, value)
+    return profile_defaults
 
 
 if __name__ == '__main__':
-    args = _parse_args()
+    args, parser = _parse_args()
+    preprocess_runtime_profile = _apply_preprocess_runtime_profile_defaults(args, parser)
     args_dict = vars(args)
     print(args_dict)
 
     assert len(args.resolution_area) == 2, "resolution_area should be a list of two integers [width, height]"
+    if args.analysis_resolution_area is not None:
+        assert len(args.analysis_resolution_area) == 2, "analysis_resolution_area should be a list of two integers [width, height]"
+    if args.analysis_min_short_side is not None and args.analysis_min_short_side <= 0:
+        raise ValueError("analysis_min_short_side must be > 0 when provided.")
     assert not args.use_flux or args.retarget_flag, "Image editing with FLUX can only be used when pose retargeting is enabled."
     assert args.ckpt_path is not None, "Please provide --ckpt_path."
     assert Path(args.ckpt_path).exists(), f"Checkpoint path does not exist: {args.ckpt_path}"
@@ -530,6 +571,8 @@ if __name__ == '__main__':
                                             refer_image_path=args.refer_path,
                                             output_path=args.save_path,
                                             resolution_area=args.resolution_area,
+                                            analysis_resolution_area=args.analysis_resolution_area,
+                                            analysis_min_short_side=args.analysis_min_short_side,
                                             fps=args.fps,
                                             save_format=args.save_format,
                                             lossless_intermediate=args.lossless_intermediate,
@@ -594,6 +637,16 @@ if __name__ == '__main__':
             retarget_flag=args.retarget_flag,
             use_flux=args.use_flux,
             resolution_area=args.resolution_area,
+            analysis_settings={
+                "preprocess_runtime_profile": args.preprocess_runtime_profile,
+                "resolved_profile": preprocess_runtime_profile,
+                "analysis_resolution_area": args.analysis_resolution_area,
+                "analysis_min_short_side": args.analysis_min_short_side,
+                "analysis_height": pipeline_outputs.get("analysis_height"),
+                "analysis_width": pipeline_outputs.get("analysis_width"),
+                "export_height": pipeline_outputs["height"],
+                "export_width": pipeline_outputs["width"],
+            },
             fps_request=args.fps,
             fps_output=pipeline_outputs["fps"],
             frame_count=pipeline_outputs["frame_count"],
@@ -641,6 +694,7 @@ if __name__ == '__main__':
                 "sam_negative_margin": args.sam_negative_margin,
                 "sam_reprompt_interval": args.sam_reprompt_interval,
                 "sam_prompt_mode": args.sam_prompt_mode,
+                "preprocess_runtime_profile": args.preprocess_runtime_profile,
                 "sam_runtime_profile": args.sam_runtime_profile,
                 "sam_apply_postprocessing": args.sam_apply_postprocessing,
                 "sam_use_flash_attn": args.sam_use_flash_attn,
@@ -674,9 +728,17 @@ if __name__ == '__main__':
                 "reference_scale_clamp_max": args.reference_scale_clamp_max,
                 "stats": pipeline_outputs.get("reference_normalization", {}),
             },
+            runtime_stats=pipeline_outputs.get("runtime_stats", {}),
             qa_outputs=pipeline_outputs.get("qa_outputs", {}),
         )
         metadata_path = write_preprocess_metadata(args.save_path, metadata)
+        runtime_stats_path = None
+        if pipeline_outputs.get("runtime_stats"):
+            runtime_stats_path = Path(args.save_path) / "preprocess_runtime_stats.json"
+            runtime_stats_path.write_text(
+                json.dumps(pipeline_outputs["runtime_stats"], indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
         if manifest_token is not None:
             output_dir = Path(args.save_path).resolve()
             stage_outputs = {
@@ -684,6 +746,8 @@ if __name__ == '__main__':
                 "generated_files": sorted(str(path.resolve()) for path in output_dir.iterdir()),
                 "metadata_path": str(metadata_path.resolve()),
             }
+            if runtime_stats_path is not None and runtime_stats_path.exists():
+                stage_outputs["runtime_stats"] = str(runtime_stats_path.resolve())
             for artifact_name, artifact in pipeline_outputs["src_files"].items():
                 path = output_dir / artifact["path"]
                 if path.exists():
@@ -701,6 +765,7 @@ if __name__ == '__main__':
                 manifest_token,
                 status="completed",
                 outputs=stage_outputs,
+                metrics=pipeline_outputs.get("runtime_metrics", {}),
             )
     except Exception as exc:
         if manifest_token is not None:
