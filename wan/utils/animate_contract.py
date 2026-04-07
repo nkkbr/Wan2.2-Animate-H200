@@ -92,6 +92,8 @@ def build_preprocess_metadata(
     src_files: dict | None = None,
     intermediate_save_format: str = "mp4",
     lossless_intermediate: bool = False,
+    control_stabilization: dict | None = None,
+    qa_outputs: dict | None = None,
 ) -> dict:
     if src_files is None:
         src_files = {
@@ -197,6 +199,7 @@ def build_preprocess_metadata(
                 "w_len": w_len,
                 "h_len": h_len,
             },
+            "control_stabilization": control_stabilization or {},
         },
         "source_inputs": {
             "video_path": str(Path(video_path).resolve()),
@@ -204,6 +207,7 @@ def build_preprocess_metadata(
             "output_path": str(Path(output_path).resolve()),
         },
         "src_files": src_files,
+        "qa_outputs": qa_outputs or {},
     }
 
 

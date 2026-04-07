@@ -81,6 +81,10 @@ lossless roundtrip 检查脚本见：
 
 - `scripts/eval/check_lossless_roundtrip.py`
 
+控制信号稳定性检查脚本见：
+
+- `scripts/eval/check_control_stability.py`
+
 ## 7. 后续建议
 
 后续应把外部 benchmark 素材逐步补充到统一 manifest 中，并且每个新增素材都附带：

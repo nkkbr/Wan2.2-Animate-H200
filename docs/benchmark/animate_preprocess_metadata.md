@@ -27,6 +27,8 @@
 - `derived_mask_semantics.background_keep_mask`: 当前固定为 `1 - person_foreground`
 - `processing.save_format`: preprocess 请求的中间格式
 - `processing.lossless_intermediate`: 是否启用了推荐的高保真中间格式布局
+- `processing.control_stabilization`: face / pose 稳定化参数快照
+- `qa_outputs`: 可选的 QA overlay 与曲线产物
 
 ## `src_files`
 

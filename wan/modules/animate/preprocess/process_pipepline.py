@@ -14,6 +14,13 @@ from pose2d_utils import AAPoseMeta
 from utils import resize_by_area, get_frame_indices, padding_resize, get_face_bboxes, get_aug_mask, get_mask_body_img
 from human_visualization import draw_aapose_by_meta_new
 from retarget_pose import get_retarget_pose
+from signal_stabilization import (
+    make_face_bbox_overlay,
+    make_pose_overlay,
+    stabilize_face_bboxes,
+    stabilize_pose_metas,
+    write_json,
+)
 import sam2.modeling.sam.transformer as transformer
 transformer.USE_FLASH_ATTN = False
 transformer.MATH_KERNEL_ON = True
@@ -42,7 +49,42 @@ class ProcessPipeline():
             return "png"
         return "png_seq"
 
-    def __call__(self, video_path, refer_image_path, output_path, resolution_area=[1280, 720], fps=30, save_format="mp4", lossless_intermediate=False, iterations=3, k=7, w_len=1, h_len=1, retarget_flag=False, use_flux=False, replace_flag=False):
+    def __call__(
+        self,
+        video_path,
+        refer_image_path,
+        output_path,
+        resolution_area=[1280, 720],
+        fps=30,
+        save_format="mp4",
+        lossless_intermediate=False,
+        face_conf_thresh=0.45,
+        face_min_valid_points=15,
+        face_bbox_smooth_method="ema",
+        face_bbox_smooth_strength=0.7,
+        face_bbox_max_scale_change=1.15,
+        face_bbox_max_center_shift=0.04,
+        face_bbox_hold_frames=6,
+        pose_smooth_method="ema",
+        pose_conf_thresh_body=0.5,
+        pose_conf_thresh_hand=0.35,
+        pose_conf_thresh_face=0.45,
+        pose_smooth_strength_body=0.65,
+        pose_smooth_strength_hand=0.35,
+        pose_smooth_strength_face=0.7,
+        pose_max_velocity_body=0.05,
+        pose_max_velocity_hand=0.08,
+        pose_max_velocity_face=0.04,
+        pose_interp_max_gap=3,
+        export_qa_visuals=False,
+        iterations=3,
+        k=7,
+        w_len=1,
+        h_len=1,
+        retarget_flag=False,
+        use_flux=False,
+        replace_flag=False,
+    ):
         if replace_flag:
 
             video_reader = VideoReader(video_path)
@@ -74,14 +116,36 @@ class ProcessPipeline():
             height, width = frames[0].shape[:2]
             logger.info(f"Processing pose meta")
 
-
-            tpl_pose_metas = self.pose2d(frames)
+            raw_pose_metas = self.pose2d(frames)
+            tpl_pose_metas, pose_conf_curve = stabilize_pose_metas(
+                raw_pose_metas,
+                method=pose_smooth_method,
+                pose_conf_thresh_body=pose_conf_thresh_body,
+                pose_conf_thresh_hand=pose_conf_thresh_hand,
+                pose_conf_thresh_face=pose_conf_thresh_face,
+                pose_smooth_strength_body=pose_smooth_strength_body,
+                pose_smooth_strength_hand=pose_smooth_strength_hand,
+                pose_smooth_strength_face=pose_smooth_strength_face,
+                pose_max_velocity_body=pose_max_velocity_body,
+                pose_max_velocity_hand=pose_max_velocity_hand,
+                pose_max_velocity_face=pose_max_velocity_face,
+                pose_interp_max_gap=pose_interp_max_gap,
+            )
+            face_bboxes, face_bbox_curve = stabilize_face_bboxes(
+                tpl_pose_metas,
+                image_shape=(height, width),
+                scale=1.3,
+                conf_thresh=face_conf_thresh,
+                min_valid_points=face_min_valid_points,
+                smooth_method=face_bbox_smooth_method,
+                smooth_strength=face_bbox_smooth_strength,
+                max_scale_change=face_bbox_max_scale_change,
+                max_center_shift=face_bbox_max_center_shift,
+                hold_frames=face_bbox_hold_frames,
+            )
 
             face_images = []
-            for idx, meta in enumerate(tpl_pose_metas):
-                face_bbox_for_image = get_face_bboxes(meta['keypoints_face'][:, :2], scale=1.3,
-                                                    image_shape=(frames[0].shape[0], frames[0].shape[1]))
-
+            for idx, face_bbox_for_image in enumerate(face_bboxes):
                 x1, x2, y1, y2 = face_bbox_for_image
                 face_image = frames[idx][y1:y2, x1:x2]
                 face_image = cv2.resize(face_image, (512, 512))
@@ -122,6 +186,32 @@ class ProcessPipeline():
             cond_images = np.stack(cond_images).astype(np.uint8)
             bg_images = np.stack(bg_images).astype(np.uint8)
             aug_masks = np.stack(aug_masks).astype(np.float32)
+            qa_outputs = {}
+            if export_qa_visuals:
+                face_bbox_overlay = make_face_bbox_overlay(np.stack(frames).astype(np.uint8), face_bboxes, face_bbox_curve)
+                pose_overlay = make_pose_overlay(np.stack(frames).astype(np.uint8), tpl_pose_metas)
+                qa_face_overlay = write_rgb_artifact(
+                    frames=face_bbox_overlay,
+                    output_root=output_path,
+                    stem="face_bbox_overlay",
+                    artifact_format="mp4",
+                    fps=fps,
+                )
+                qa_pose_overlay = write_rgb_artifact(
+                    frames=pose_overlay,
+                    output_root=output_path,
+                    stem="pose_overlay",
+                    artifact_format="mp4",
+                    fps=fps,
+                )
+                write_json(os.path.join(output_path, "face_bbox_curve.json"), face_bbox_curve)
+                write_json(os.path.join(output_path, "pose_conf_curve.json"), pose_conf_curve)
+                qa_outputs = {
+                    "face_bbox_overlay": qa_face_overlay["path"],
+                    "pose_overlay": qa_pose_overlay["path"],
+                    "face_bbox_curve": "face_bbox_curve.json",
+                    "pose_conf_curve": "pose_conf_curve.json",
+                }
 
             src_files = {
                 "pose": write_rgb_artifact(
@@ -166,7 +256,7 @@ class ProcessPipeline():
                     "resized_width": int(width),
                 },
             }
-            return {
+            outputs = {
                 "frame_count": len(frames),
                 "fps": float(fps),
                 "height": int(height),
@@ -176,6 +266,9 @@ class ProcessPipeline():
                 "reference_width": int(reference_width),
                 "src_files": src_files,
             }
+            if qa_outputs:
+                outputs["qa_outputs"] = qa_outputs
+            return outputs
         else:
             logger.info(f"Processing reference image: {refer_image_path}")
             refer_img = load_image_rgb(refer_image_path)
@@ -217,13 +310,36 @@ class ProcessPipeline():
             logger.info(f"Processing pose meta")
 
             tpl_pose_meta0 = self.pose2d(frames[:1])[0]
-            tpl_pose_metas = self.pose2d(frames)
+            raw_tpl_pose_metas = self.pose2d(frames)
+            tpl_pose_metas, pose_conf_curve = stabilize_pose_metas(
+                raw_tpl_pose_metas,
+                method=pose_smooth_method,
+                pose_conf_thresh_body=pose_conf_thresh_body,
+                pose_conf_thresh_hand=pose_conf_thresh_hand,
+                pose_conf_thresh_face=pose_conf_thresh_face,
+                pose_smooth_strength_body=pose_smooth_strength_body,
+                pose_smooth_strength_hand=pose_smooth_strength_hand,
+                pose_smooth_strength_face=pose_smooth_strength_face,
+                pose_max_velocity_body=pose_max_velocity_body,
+                pose_max_velocity_hand=pose_max_velocity_hand,
+                pose_max_velocity_face=pose_max_velocity_face,
+                pose_interp_max_gap=pose_interp_max_gap,
+            )
+            face_bboxes, face_bbox_curve = stabilize_face_bboxes(
+                tpl_pose_metas,
+                image_shape=(frames[0].shape[0], frames[0].shape[1]),
+                scale=1.3,
+                conf_thresh=face_conf_thresh,
+                min_valid_points=face_min_valid_points,
+                smooth_method=face_bbox_smooth_method,
+                smooth_strength=face_bbox_smooth_strength,
+                max_scale_change=face_bbox_max_scale_change,
+                max_center_shift=face_bbox_max_center_shift,
+                hold_frames=face_bbox_hold_frames,
+            )
 
             face_images = []
-            for idx, meta in enumerate(tpl_pose_metas):
-                face_bbox_for_image = get_face_bboxes(meta['keypoints_face'][:, :2], scale=1.3,
-                                                    image_shape=(frames[0].shape[0], frames[0].shape[1]))
-
+            for idx, face_bbox_for_image in enumerate(face_bboxes):
                 x1, x2, y1, y2 = face_bbox_for_image
                 face_image = frames[idx][y1:y2, x1:x2]
                 face_image = cv2.resize(face_image, (512, 512))
@@ -283,6 +399,32 @@ class ProcessPipeline():
 
             face_images = np.stack(face_images).astype(np.uint8)
             cond_images = np.stack(cond_images).astype(np.uint8)
+            qa_outputs = {}
+            if export_qa_visuals:
+                face_bbox_overlay = make_face_bbox_overlay(np.stack(frames).astype(np.uint8), face_bboxes, face_bbox_curve)
+                pose_overlay = make_pose_overlay(np.stack(frames).astype(np.uint8), tpl_pose_metas)
+                qa_face_overlay = write_rgb_artifact(
+                    frames=face_bbox_overlay,
+                    output_root=output_path,
+                    stem="face_bbox_overlay",
+                    artifact_format="mp4",
+                    fps=fps,
+                )
+                qa_pose_overlay = write_rgb_artifact(
+                    frames=pose_overlay,
+                    output_root=output_path,
+                    stem="pose_overlay",
+                    artifact_format="mp4",
+                    fps=fps,
+                )
+                write_json(os.path.join(output_path, "face_bbox_curve.json"), face_bbox_curve)
+                write_json(os.path.join(output_path, "pose_conf_curve.json"), pose_conf_curve)
+                qa_outputs = {
+                    "face_bbox_overlay": qa_face_overlay["path"],
+                    "pose_overlay": qa_pose_overlay["path"],
+                    "face_bbox_curve": "face_bbox_curve.json",
+                    "pose_conf_curve": "pose_conf_curve.json",
+                }
             src_files = {
                 "pose": write_rgb_artifact(
                     frames=cond_images,
@@ -312,7 +454,7 @@ class ProcessPipeline():
                     "resized_width": int(cond_images[0].shape[1]),
                 },
             }
-            return {
+            outputs = {
                 "frame_count": len(frames),
                 "fps": float(fps),
                 "height": int(cond_images[0].shape[0]),
@@ -322,6 +464,9 @@ class ProcessPipeline():
                 "reference_width": int(reference_width),
                 "src_files": src_files,
             }
+            if qa_outputs:
+                outputs["qa_outputs"] = qa_outputs
+            return outputs
 
     def get_editing_prompts(self, tpl_pose_metas, refer_pose_meta):
         arm_visible = False

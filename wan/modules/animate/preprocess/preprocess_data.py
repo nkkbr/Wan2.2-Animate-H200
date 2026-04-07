@@ -90,6 +90,122 @@ def _parse_args():
         default=False,
         help="Enable the recommended high-fidelity intermediate layout: RGB control signals are saved as png sequences and person_mask is saved as npz."
     )
+    parser.add_argument(
+        "--face_conf_thresh",
+        type=float,
+        default=0.45,
+        help="Confidence threshold for face keypoints used to build face crops."
+    )
+    parser.add_argument(
+        "--face_min_valid_points",
+        type=int,
+        default=15,
+        help="Minimum number of valid face keypoints required before computing a new face bbox."
+    )
+    parser.add_argument(
+        "--face_bbox_smooth_method",
+        type=str,
+        default="ema",
+        choices=["ema"],
+        help="Face bbox smoothing method."
+    )
+    parser.add_argument(
+        "--face_bbox_smooth_strength",
+        type=float,
+        default=0.7,
+        help="EMA strength for face bbox smoothing. Higher values make the crop more stable."
+    )
+    parser.add_argument(
+        "--face_bbox_max_scale_change",
+        type=float,
+        default=1.15,
+        help="Maximum per-frame multiplicative change allowed for face bbox width/height."
+    )
+    parser.add_argument(
+        "--face_bbox_max_center_shift",
+        type=float,
+        default=0.04,
+        help="Maximum normalized center shift allowed for face bbox updates, expressed as a fraction of max(H, W)."
+    )
+    parser.add_argument(
+        "--face_bbox_hold_frames",
+        type=int,
+        default=6,
+        help="Maximum number of consecutive frames that may reuse the previous face bbox when confidence collapses."
+    )
+    parser.add_argument(
+        "--pose_smooth_method",
+        type=str,
+        default="ema",
+        choices=["ema"],
+        help="Pose smoothing method."
+    )
+    parser.add_argument(
+        "--pose_conf_thresh_body",
+        type=float,
+        default=0.5,
+        help="Confidence threshold for body keypoints."
+    )
+    parser.add_argument(
+        "--pose_conf_thresh_hand",
+        type=float,
+        default=0.35,
+        help="Confidence threshold for hand keypoints."
+    )
+    parser.add_argument(
+        "--pose_conf_thresh_face",
+        type=float,
+        default=0.45,
+        help="Confidence threshold for face keypoints inside the pose stream."
+    )
+    parser.add_argument(
+        "--pose_smooth_strength_body",
+        type=float,
+        default=0.65,
+        help="EMA strength for body keypoint smoothing."
+    )
+    parser.add_argument(
+        "--pose_smooth_strength_hand",
+        type=float,
+        default=0.35,
+        help="EMA strength for hand keypoint smoothing."
+    )
+    parser.add_argument(
+        "--pose_smooth_strength_face",
+        type=float,
+        default=0.7,
+        help="EMA strength for face keypoint smoothing."
+    )
+    parser.add_argument(
+        "--pose_max_velocity_body",
+        type=float,
+        default=0.05,
+        help="Maximum normalized per-frame displacement for body keypoints after smoothing."
+    )
+    parser.add_argument(
+        "--pose_max_velocity_hand",
+        type=float,
+        default=0.08,
+        help="Maximum normalized per-frame displacement for hand keypoints after smoothing."
+    )
+    parser.add_argument(
+        "--pose_max_velocity_face",
+        type=float,
+        default=0.04,
+        help="Maximum normalized per-frame displacement for face keypoints after smoothing."
+    )
+    parser.add_argument(
+        "--pose_interp_max_gap",
+        type=int,
+        default=3,
+        help="Maximum number of consecutive low-confidence frames to repair via interpolation or hold."
+    )
+    parser.add_argument(
+        "--export_qa_visuals",
+        action="store_true",
+        default=False,
+        help="Export QA overlays and curve JSON files for stabilized face and pose controls."
+    )
 
     parser.add_argument(
         "--replace_flag",
@@ -188,6 +304,25 @@ if __name__ == '__main__':
                                             fps=args.fps,
                                             save_format=args.save_format,
                                             lossless_intermediate=args.lossless_intermediate,
+                                            face_conf_thresh=args.face_conf_thresh,
+                                            face_min_valid_points=args.face_min_valid_points,
+                                            face_bbox_smooth_method=args.face_bbox_smooth_method,
+                                            face_bbox_smooth_strength=args.face_bbox_smooth_strength,
+                                            face_bbox_max_scale_change=args.face_bbox_max_scale_change,
+                                            face_bbox_max_center_shift=args.face_bbox_max_center_shift,
+                                            face_bbox_hold_frames=args.face_bbox_hold_frames,
+                                            pose_smooth_method=args.pose_smooth_method,
+                                            pose_conf_thresh_body=args.pose_conf_thresh_body,
+                                            pose_conf_thresh_hand=args.pose_conf_thresh_hand,
+                                            pose_conf_thresh_face=args.pose_conf_thresh_face,
+                                            pose_smooth_strength_body=args.pose_smooth_strength_body,
+                                            pose_smooth_strength_hand=args.pose_smooth_strength_hand,
+                                            pose_smooth_strength_face=args.pose_smooth_strength_face,
+                                            pose_max_velocity_body=args.pose_max_velocity_body,
+                                            pose_max_velocity_hand=args.pose_max_velocity_hand,
+                                            pose_max_velocity_face=args.pose_max_velocity_face,
+                                            pose_interp_max_gap=args.pose_interp_max_gap,
+                                            export_qa_visuals=args.export_qa_visuals,
                                             iterations=args.iterations,
                                             k=args.k,
                                             w_len=args.w_len,
@@ -217,6 +352,28 @@ if __name__ == '__main__':
             src_files=pipeline_outputs["src_files"],
             intermediate_save_format=args.save_format,
             lossless_intermediate=args.lossless_intermediate,
+            control_stabilization={
+                "face_conf_thresh": args.face_conf_thresh,
+                "face_min_valid_points": args.face_min_valid_points,
+                "face_bbox_smooth_method": args.face_bbox_smooth_method,
+                "face_bbox_smooth_strength": args.face_bbox_smooth_strength,
+                "face_bbox_max_scale_change": args.face_bbox_max_scale_change,
+                "face_bbox_max_center_shift": args.face_bbox_max_center_shift,
+                "face_bbox_hold_frames": args.face_bbox_hold_frames,
+                "pose_smooth_method": args.pose_smooth_method,
+                "pose_conf_thresh_body": args.pose_conf_thresh_body,
+                "pose_conf_thresh_hand": args.pose_conf_thresh_hand,
+                "pose_conf_thresh_face": args.pose_conf_thresh_face,
+                "pose_smooth_strength_body": args.pose_smooth_strength_body,
+                "pose_smooth_strength_hand": args.pose_smooth_strength_hand,
+                "pose_smooth_strength_face": args.pose_smooth_strength_face,
+                "pose_max_velocity_body": args.pose_max_velocity_body,
+                "pose_max_velocity_hand": args.pose_max_velocity_hand,
+                "pose_max_velocity_face": args.pose_max_velocity_face,
+                "pose_interp_max_gap": args.pose_interp_max_gap,
+                "export_qa_visuals": args.export_qa_visuals,
+            },
+            qa_outputs=pipeline_outputs.get("qa_outputs", {}),
         )
         metadata_path = write_preprocess_metadata(args.save_path, metadata)
         if manifest_token is not None:
@@ -233,6 +390,9 @@ if __name__ == '__main__':
             metadata_file = output_dir / "metadata.json"
             if metadata_file.exists():
                 stage_outputs["metadata"] = str(metadata_file.resolve())
+            if "qa_outputs" in pipeline_outputs:
+                for qa_name, qa_path in pipeline_outputs["qa_outputs"].items():
+                    stage_outputs[qa_name] = str((output_dir / qa_path).resolve())
             finalize_stage_manifest(
                 run_layout,
                 manifest_token,
