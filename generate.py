@@ -137,6 +137,11 @@ def _validate_args(args):
         assert 0.0 <= args.replacement_transition_low < args.replacement_transition_high <= 1.0, (
             "--replacement_transition_low and --replacement_transition_high must satisfy 0 <= low < high <= 1."
         )
+        assert args.boundary_refine_mode in {"none", "deterministic"}, (
+            "--boundary_refine_mode must be one of: none, deterministic."
+        )
+        assert 0.0 <= args.boundary_refine_strength <= 1.0, "--boundary_refine_strength must be in [0, 1]."
+        assert 0.0 <= args.boundary_refine_sharpen <= 1.0, "--boundary_refine_sharpen must be in [0, 1]."
         assert 0.0 <= args.overlap_background_current_strength <= 1.0, (
             "--overlap_background_current_strength must be in [0, 1]."
         )
@@ -458,6 +463,31 @@ def _parse_args():
         default=0.9,
         help="Upper threshold used to classify hard-background-keep regions in replacement mask debug views."
     )
+    parser.add_argument(
+        "--boundary_refine_mode",
+        type=str,
+        default="none",
+        choices=["none", "deterministic"],
+        help="Optional pixel-domain boundary refinement mode applied after Wan-Animate decoding."
+    )
+    parser.add_argument(
+        "--boundary_refine_strength",
+        type=float,
+        default=0.35,
+        help="Strength of deterministic outer-band boundary compositing."
+    )
+    parser.add_argument(
+        "--boundary_refine_sharpen",
+        type=float,
+        default=0.15,
+        help="Strength of inner-boundary unsharp masking for deterministic boundary refinement."
+    )
+    parser.add_argument(
+        "--boundary_refine_use_clean_plate",
+        type=str2bool,
+        default=True,
+        help="Whether pixel-domain boundary refinement should prefer the preprocess clean-plate background artifact when available."
+    )
     
     # following args only works for s2v
     parser.add_argument(
@@ -733,6 +763,10 @@ def generate(args):
                 replacement_boundary_strength=args.replacement_boundary_strength,
                 replacement_transition_low=args.replacement_transition_low,
                 replacement_transition_high=args.replacement_transition_high,
+                boundary_refine_mode=args.boundary_refine_mode,
+                boundary_refine_strength=args.boundary_refine_strength,
+                boundary_refine_sharpen=args.boundary_refine_sharpen,
+                boundary_refine_use_clean_plate=args.boundary_refine_use_clean_plate,
                 clip_len=args.frame_num,
                 shift=args.sample_shift,
                 sample_solver=args.sample_solver,
@@ -866,6 +900,12 @@ def generate(args):
                         "seam_boundary_after_mean": (runtime_stats.get("seam_summary") or {}).get("boundary_after", {}).get("mean"),
                         "overlap_mad_before_mean": (runtime_stats.get("seam_summary") or {}).get("overlap_before", {}).get("mean"),
                         "overlap_mad_after_prev_mean": (runtime_stats.get("seam_summary") or {}).get("overlap_after_prev", {}).get("mean"),
+                        "boundary_refine_applied": (runtime_stats.get("boundary_refinement") or {}).get("applied"),
+                        "boundary_refine_runtime_sec": (runtime_stats.get("boundary_refinement") or {}).get("runtime_sec"),
+                        "boundary_refine_band_gradient_before_mean": (runtime_stats.get("boundary_refinement") or {}).get("band_gradient_before_mean"),
+                        "boundary_refine_band_gradient_after_mean": (runtime_stats.get("boundary_refinement") or {}).get("band_gradient_after_mean"),
+                        "boundary_refine_halo_ratio_before": (runtime_stats.get("boundary_refinement") or {}).get("halo_ratio_before"),
+                        "boundary_refine_halo_ratio_after": (runtime_stats.get("boundary_refinement") or {}).get("halo_ratio_after"),
                     }
                 finalize_stage_manifest(
                     run_layout,

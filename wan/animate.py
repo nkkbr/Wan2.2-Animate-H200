@@ -35,9 +35,16 @@ from .utils.animate_contract import (
     BACKGROUND_KEEP_MASK_SEMANTICS,
     PERSON_MASK_SEMANTICS,
     load_image_rgb,
+    read_video_rgb,
     resolve_preprocess_artifacts,
     validate_loaded_preprocess_bundle,
     validate_refert_num,
+)
+from .utils.boundary_refinement import (
+    refine_boundary_frames,
+    rgb_frames_to_tensor_video,
+    tensor_video_to_rgb_frames,
+    write_boundary_refinement_debug_artifacts,
 )
 from .utils.clip_blending import (
     blend_clip_overlap,
@@ -305,6 +312,136 @@ class WanAnimate:
         person_mask_images = load_person_mask_artifact(src_mask_artifact["path"], src_mask_artifact.get("format"))
         return bg_images, person_mask_images
 
+    def _load_aligned_driver_video_frames(self, preprocess_metadata, *, frame_count, height, width):
+        if preprocess_metadata is None:
+            return None
+        video_path = preprocess_metadata.get("source_inputs", {}).get("video_path")
+        if not video_path:
+            return None
+        video_path = Path(video_path)
+        if not video_path.exists():
+            logging.warning("Boundary refinement requested original video, but source video does not exist: %s", video_path)
+            return None
+
+        try:
+            from decord import VideoReader
+
+            reader = VideoReader(str(video_path))
+            video_fps = float(reader.get_avg_fps())
+            target_fps = float(preprocess_metadata.get("fps", video_fps))
+            indices = self._get_frame_indices(len(reader), video_fps, frame_count, target_fps)
+            frames = reader.get_batch(indices).asnumpy()
+        except Exception as exc:
+            logging.warning("Falling back to full RGB video read for boundary refinement source video due to: %s", exc)
+            try:
+                frames = read_video_rgb(video_path)
+            except Exception as read_exc:
+                logging.warning("Failed to read source video for boundary refinement: %s", read_exc)
+                return None
+            if len(frames) < frame_count:
+                frames = np.concatenate([frames, np.repeat(frames[-1:], repeats=frame_count - len(frames), axis=0)], axis=0)
+            frames = frames[:frame_count]
+
+        if frames.shape[1:3] != (height, width):
+            frames = np.stack([self.padding_resize(frame, height=height, width=width) for frame in frames], axis=0)
+        return np.asarray(frames, dtype=np.uint8)
+
+    @staticmethod
+    def _get_frame_indices(frame_num, video_fps, clip_length, target_fps):
+        times = np.arange(0, clip_length, dtype=np.float32) / float(target_fps)
+        frame_indices = np.round(times * float(video_fps)).astype(int)
+        frame_indices = np.clip(frame_indices, 0, int(frame_num) - 1)
+        return frame_indices.tolist()
+
+    def _apply_boundary_refinement(
+        self,
+        *,
+        videos,
+        preprocess_metadata,
+        bg_images,
+        replacement_masks,
+        real_frame_len,
+        fps,
+        save_debug_dir,
+        boundary_refine_mode,
+        boundary_refine_strength,
+        boundary_refine_sharpen,
+        boundary_refine_use_clean_plate,
+    ):
+        stats = {
+            "mode_requested": boundary_refine_mode,
+            "applied": False,
+            "background_source": None,
+        }
+        if boundary_refine_mode == "none":
+            return videos, stats
+
+        generated_video = videos[0]
+        generated_frames = tensor_video_to_rgb_frames(generated_video)
+        if generated_frames.shape[0] != real_frame_len:
+            raise ValueError(
+                f"Boundary refinement expects {real_frame_len} frames, got generated_frames={generated_frames.shape[0]}."
+            )
+
+        background_mode = (
+            preprocess_metadata.get("processing", {}).get("background", {}).get("bg_inpaint_mode")
+            if preprocess_metadata is not None else None
+        )
+        background_frames = None
+        background_source = None
+        if boundary_refine_use_clean_plate and bg_images is not None and background_mode not in {None, "none", "hole"}:
+            background_frames = np.asarray(bg_images[:real_frame_len], dtype=np.uint8)
+            background_source = "clean_plate"
+        else:
+            background_frames = self._load_aligned_driver_video_frames(
+                preprocess_metadata,
+                frame_count=real_frame_len,
+                height=generated_frames.shape[1],
+                width=generated_frames.shape[2],
+            )
+            if background_frames is not None:
+                background_source = "source_video"
+            elif bg_images is not None:
+                background_frames = np.asarray(bg_images[:real_frame_len], dtype=np.uint8)
+                background_source = "background_artifact_fallback"
+
+        if background_frames is None:
+            logging.warning("Boundary refinement skipped because no usable background source was available.")
+            stats["skipped_reason"] = "missing_background_source"
+            return videos, stats
+
+        refined_frames, debug_data = refine_boundary_frames(
+            generated_frames=generated_frames,
+            background_frames=background_frames,
+            person_mask=replacement_masks["person_mask"][:real_frame_len].cpu().numpy(),
+            soft_band=(
+                replacement_masks["soft_band"][:real_frame_len].cpu().numpy()
+                if replacement_masks["soft_band"] is not None else None
+            ),
+            strength=boundary_refine_strength,
+            sharpen=boundary_refine_sharpen,
+        )
+        refined_video = rgb_frames_to_tensor_video(refined_frames).unsqueeze(0).to(dtype=videos.dtype)
+        stats.update({
+            "applied": True,
+            "background_source": background_source,
+            "background_mode": background_mode,
+            "strength": float(boundary_refine_strength),
+            "sharpen": float(boundary_refine_sharpen),
+            **debug_data["metrics"],
+        })
+        if save_debug_dir is not None:
+            stats["debug_paths"] = write_boundary_refinement_debug_artifacts(
+                save_debug_dir=save_debug_dir,
+                fps=fps,
+                generated_frames=generated_frames,
+                refined_frames=refined_frames,
+                background_frames=background_frames,
+                person_mask=replacement_masks["person_mask"][:real_frame_len].cpu().numpy(),
+                debug_data=debug_data,
+            )
+        return refined_video, stats
+
     def _prepare_replacement_masks(
         self,
         *,
@@ -534,6 +671,10 @@ class WanAnimate:
         replacement_boundary_strength=0.5,
         replacement_transition_low=0.1,
         replacement_transition_high=0.9,
+        boundary_refine_mode="none",
+        boundary_refine_strength=0.35,
+        boundary_refine_sharpen=0.15,
+        boundary_refine_use_clean_plate=True,
         shift=5.0,
         sample_solver='dpm++',
         sampling_steps=20,
@@ -594,6 +735,14 @@ class WanAnimate:
                 Random seed for noise generation. If -1, use random seed
             offload_model (`bool`, *optional*, defaults to True):
                 If True, offloads models to CPU during generation to save VRAM
+            boundary_refine_mode (`str`, *optional*, defaults to "none"):
+                Optional pixel-domain post refinement mode. `deterministic` applies a boundary-band composite and local sharpening.
+            boundary_refine_strength (`float`, *optional*, defaults to 0.35):
+                Strength of the outer-band background composite in pixel-domain refinement.
+            boundary_refine_sharpen (`float`, *optional*, defaults to 0.15):
+                Strength of the inner-boundary unsharp mask during pixel-domain refinement.
+            boundary_refine_use_clean_plate (`bool`, *optional*, defaults to True):
+                Whether pixel-domain refinement should prefer the preprocess clean-plate background artifact when available.
             save_debug_dir (`str`, *optional*, defaults to None):
                 Optional directory for runtime statistics emitted by the animate pipeline.
             log_runtime_stats (`bool`, *optional*, defaults to False):
@@ -624,6 +773,12 @@ class WanAnimate:
             raise ValueError(
                 f"temporal_handoff_strength must be in [0, 1]. Got {temporal_handoff_strength}."
             )
+        if boundary_refine_mode not in {"none", "deterministic"}:
+            raise ValueError(f"Unsupported boundary_refine_mode: {boundary_refine_mode}")
+        if not 0.0 <= float(boundary_refine_strength) <= 1.0:
+            raise ValueError(f"boundary_refine_strength must be in [0, 1]. Got {boundary_refine_strength}.")
+        if not 0.0 <= float(boundary_refine_sharpen) <= 1.0:
+            raise ValueError(f"boundary_refine_sharpen must be in [0, 1]. Got {boundary_refine_sharpen}.")
         if temporal_handoff_debug_max_points < 0:
             raise ValueError(
                 f"temporal_handoff_debug_max_points must be >= 0. Got {temporal_handoff_debug_max_points}."
@@ -697,6 +852,7 @@ class WanAnimate:
         face_images = self.inputs_padding(face_images, target_len)
         
         soft_band_images = None
+        bg_images = None
         if replace_flag:
             bg_images, person_mask_images = self.prepare_source_for_replace(
                 src_bg_artifact=artifacts["background"],
@@ -789,6 +945,10 @@ class WanAnimate:
             "replacement_boundary_strength": float(replacement_boundary_strength) if replace_flag else None,
             "replacement_transition_low": float(replacement_transition_low) if replace_flag else None,
             "replacement_transition_high": float(replacement_transition_high) if replace_flag else None,
+            "boundary_refine_mode": boundary_refine_mode if replace_flag else "none",
+            "boundary_refine_strength": float(boundary_refine_strength) if replace_flag else None,
+            "boundary_refine_sharpen": float(boundary_refine_sharpen) if replace_flag else None,
+            "boundary_refine_use_clean_plate": bool(boundary_refine_use_clean_plate) if replace_flag else None,
             "background_mode": (
                 preprocess_metadata.get("processing", {}).get("background", {}).get(
                     "bg_inpaint_mode",
@@ -811,6 +971,10 @@ class WanAnimate:
             "clip_stats": [],
             "seam_stats": [],
             "temporal_handoff_stats": [],
+            "boundary_refinement": {
+                "mode_requested": boundary_refine_mode if replace_flag else "none",
+                "applied": False,
+            },
         }
         if replacement_mask_debug:
             runtime_stats["replacement_mask_debug"] = replacement_mask_debug
@@ -1295,6 +1459,23 @@ class WanAnimate:
                 end += clip_len - refert_num
 
         videos = torch.cat(all_out_frames, dim=2)[:, :, :real_frame_len]
+        if replace_flag and boundary_refine_mode != "none":
+            boundary_refine_start = time.perf_counter()
+            videos, boundary_refinement_stats = self._apply_boundary_refinement(
+                videos=videos,
+                preprocess_metadata=preprocess_metadata,
+                bg_images=np.asarray(bg_images[:real_frame_len]) if bg_images is not None else None,
+                replacement_masks=replacement_masks,
+                real_frame_len=real_frame_len,
+                fps=preprocess_metadata["fps"] if preprocess_metadata is not None else 30.0,
+                save_debug_dir=save_debug_dir,
+                boundary_refine_mode=boundary_refine_mode,
+                boundary_refine_strength=boundary_refine_strength,
+                boundary_refine_sharpen=boundary_refine_sharpen,
+                boundary_refine_use_clean_plate=boundary_refine_use_clean_plate,
+            )
+            boundary_refinement_stats["runtime_sec"] = time.perf_counter() - boundary_refine_start
+            runtime_stats["boundary_refinement"] = boundary_refinement_stats
         total_generate_sec = time.perf_counter() - total_start_time
         peak_memory_bytes = None
         if torch.cuda.is_available():
@@ -1337,5 +1518,15 @@ class WanAnimate:
                     runtime_stats["temporal_handoff_summary"]["latent_slots"]["mean"] or 0.0,
                     runtime_stats["temporal_handoff_summary"]["base_to_memory_mad"]["mean"] or 0.0,
                     runtime_stats["temporal_handoff_summary"]["composed_to_base_mad"]["mean"] or 0.0,
+                )
+            if runtime_stats.get("boundary_refinement", {}).get("applied"):
+                logging.info(
+                    "Boundary refinement summary: source=%s runtime=%.3fs gradient_before=%.4f gradient_after=%.4f halo_before=%.4f halo_after=%.4f",
+                    runtime_stats["boundary_refinement"].get("background_source"),
+                    runtime_stats["boundary_refinement"].get("runtime_sec") or 0.0,
+                    runtime_stats["boundary_refinement"].get("band_gradient_before_mean") or 0.0,
+                    runtime_stats["boundary_refinement"].get("band_gradient_after_mean") or 0.0,
+                    runtime_stats["boundary_refinement"].get("halo_ratio_before") or 0.0,
+                    runtime_stats["boundary_refinement"].get("halo_ratio_after") or 0.0,
                 )
         return videos[0] if self.rank == 0 else None
