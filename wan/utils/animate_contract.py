@@ -11,6 +11,7 @@ PREPROCESS_STORAGE_FORMAT = "wan_animate_preprocess_v1"
 PREPROCESS_COLOR_SPACE = "rgb"
 PERSON_MASK_SEMANTICS = "person_foreground"
 BACKGROUND_KEEP_MASK_SEMANTICS = "1 - person_foreground"
+SOFT_BAND_SEMANTICS = "boundary_transition_band"
 ALLOWED_REFERT_NUMS = (1, 5)
 DEFAULT_REFERT_NUM = 5
 
@@ -94,6 +95,7 @@ def build_preprocess_metadata(
     lossless_intermediate: bool = False,
     control_stabilization: dict | None = None,
     mask_generation: dict | None = None,
+    soft_mask_settings: dict | None = None,
     qa_outputs: dict | None = None,
 ) -> dict:
     if src_files is None:
@@ -202,6 +204,7 @@ def build_preprocess_metadata(
             },
             "control_stabilization": control_stabilization or {},
             "sam2_mask_generation": mask_generation or {},
+            "soft_mask": soft_mask_settings or {},
         },
         "source_inputs": {
             "video_path": str(Path(video_path).resolve()),
@@ -278,6 +281,11 @@ def validate_preprocess_metadata(metadata: dict, src_root_path: str | Path) -> N
         )
         for key in ("background", "person_mask"):
             _require(key in src_files, f"replacement metadata missing required artifact: {key}")
+        if "soft_band" in src_files:
+            _require(
+                src_files["soft_band"].get("mask_semantics") == SOFT_BAND_SEMANTICS,
+                "soft_band artifact semantics mismatch.",
+            )
 
     root = Path(src_root_path)
     for name, artifact in src_files.items():
@@ -322,7 +330,7 @@ def resolve_preprocess_artifacts(
             "format": artifact.get("format"),
         }
         for name, artifact in metadata["src_files"].items()
-        if name in {"pose", "face", "reference", "background", "person_mask"}
+        if name in {"pose", "face", "reference", "background", "person_mask", "soft_band"}
     }
     return artifacts, metadata
 
@@ -335,6 +343,7 @@ def validate_loaded_preprocess_bundle(
     metadata: dict | None = None,
     bg_images: np.ndarray | None = None,
     person_mask_images: np.ndarray | None = None,
+    soft_band_images: np.ndarray | None = None,
 ) -> None:
     validate_rgb_video("conditioning frames", cond_images)
     validate_rgb_video("face frames", face_images)
@@ -358,6 +367,12 @@ def validate_loaded_preprocess_bundle(
                  f"Person mask frame count {person_mask_images.shape[0]} does not match pose frame count {frame_count}.")
         _require(person_mask_images.shape[1:3] == (cond_height, cond_width),
                  "Person mask size must match pose video size.")
+    if soft_band_images is not None:
+        validate_person_mask_frames("soft band frames", soft_band_images)
+        _require(soft_band_images.shape[0] == frame_count,
+                 f"Soft band frame count {soft_band_images.shape[0]} does not match pose frame count {frame_count}.")
+        _require(soft_band_images.shape[1:3] == (cond_height, cond_width),
+                 "Soft band size must match pose video size.")
 
     if metadata is None:
         return
@@ -404,4 +419,17 @@ def validate_loaded_preprocess_bundle(
         _require(
             person_mask_meta.get("mask_semantics") == PERSON_MASK_SEMANTICS,
             "person_mask artifact semantics mismatch.",
+        )
+    if soft_band_images is not None:
+        _require("soft_band" in metadata["src_files"], "soft_band frames were loaded but metadata has no soft_band artifact.")
+        soft_band_meta = metadata["src_files"]["soft_band"]
+        _require(soft_band_meta["frame_count"] == soft_band_images.shape[0], "soft_band artifact frame_count mismatch.")
+        _require(
+            soft_band_meta["height"] == soft_band_images.shape[1]
+            and soft_band_meta["width"] == soft_band_images.shape[2],
+            "soft_band artifact size mismatch.",
+        )
+        _require(
+            soft_band_meta.get("mask_semantics") == SOFT_BAND_SEMANTICS,
+            "soft_band artifact semantics mismatch.",
         )

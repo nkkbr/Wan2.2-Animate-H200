@@ -34,8 +34,9 @@ transformer.USE_FLASH_ATTN = False
 transformer.MATH_KERNEL_ON = True
 transformer.OLD_GPU = True
 from sam_utils import build_sam2_video_predictor
-from wan.utils.animate_contract import load_image_rgb, validate_rgb_video
+from wan.utils.animate_contract import SOFT_BAND_SEMANTICS, load_image_rgb, validate_rgb_video
 from wan.utils.media_io import write_person_mask_artifact, write_rgb_artifact
+from wan.utils.replacement_masks import build_soft_boundary_band
 
 
 class ProcessPipeline():
@@ -95,6 +96,9 @@ class ProcessPipeline():
         sam_use_negative_points=True,
         sam_negative_margin=0.08,
         sam_reprompt_interval=40,
+        soft_mask_mode="soft_band",
+        soft_mask_band_width=24,
+        soft_mask_blur_kernel=5,
         iterations=3,
         k=7,
         w_len=1,
@@ -217,6 +221,13 @@ class ProcessPipeline():
             cond_images = np.stack(cond_images).astype(np.uint8)
             bg_images = np.stack(bg_images).astype(np.uint8)
             aug_masks = np.stack(aug_masks).astype(np.float32)
+            soft_band_masks = None
+            if soft_mask_mode != "none":
+                soft_band_masks = build_soft_boundary_band(
+                    aug_masks,
+                    band_width=soft_mask_band_width,
+                    blur_kernel_size=soft_mask_blur_kernel,
+                ).astype(np.float32)
             qa_outputs = {}
             if export_qa_visuals:
                 face_bbox_overlay = make_face_bbox_overlay(np.stack(frames).astype(np.uint8), face_bboxes, face_bbox_curve)
@@ -265,6 +276,16 @@ class ProcessPipeline():
                     "sam_prompt_keyframes": prompt_keyframes["path"],
                     "mask_stats": "mask_stats.json",
                 }
+                if soft_band_masks is not None:
+                    qa_soft_band_overlay = write_person_mask_artifact(
+                        mask_frames=soft_band_masks,
+                        output_root=output_path,
+                        stem="soft_band_overlay",
+                        artifact_format="mp4",
+                        fps=fps,
+                        mask_semantics=SOFT_BAND_SEMANTICS,
+                    )
+                    qa_outputs["soft_band_overlay"] = qa_soft_band_overlay["path"]
 
             src_files = {
                 "pose": write_rgb_artifact(
@@ -309,6 +330,15 @@ class ProcessPipeline():
                     "resized_width": int(width),
                 },
             }
+            if soft_band_masks is not None:
+                src_files["soft_band"] = write_person_mask_artifact(
+                    mask_frames=soft_band_masks,
+                    output_root=output_path,
+                    stem="src_soft_band",
+                    artifact_format=self._artifact_format(save_format, lossless_intermediate, "soft_band", is_mask=True),
+                    fps=fps,
+                    mask_semantics=SOFT_BAND_SEMANTICS,
+                )
             outputs = {
                 "frame_count": len(frames),
                 "fps": float(fps),

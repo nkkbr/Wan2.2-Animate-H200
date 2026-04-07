@@ -89,6 +89,10 @@ SAM2 mask prompt / QA 检查脚本见：
 
 - `scripts/eval/check_sam_prompting.py`
 
+soft mask / boundary-aware replacement 检查脚本见：
+
+- `scripts/eval/check_soft_mask_pipeline.py`
+
 ## 7. 后续建议
 
 后续应把外部 benchmark 素材逐步补充到统一 manifest 中，并且每个新增素材都附带：

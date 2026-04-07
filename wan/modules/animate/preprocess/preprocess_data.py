@@ -266,6 +266,25 @@ def _parse_args():
         default=40,
         help="Additional fixed-interval SAM2 re-prompt spacing within each chunk. Set to 0 to disable."
     )
+    parser.add_argument(
+        "--soft_mask_mode",
+        type=str,
+        default="soft_band",
+        choices=["none", "soft_band"],
+        help="Replacement soft-mask strategy. 'soft_band' exports a float transition band around the hard person mask."
+    )
+    parser.add_argument(
+        "--soft_mask_band_width",
+        type=int,
+        default=24,
+        help="Width in pixels for the exported soft boundary band."
+    )
+    parser.add_argument(
+        "--soft_mask_blur_kernel",
+        type=int,
+        default=5,
+        help="Optional odd kernel size used to smooth the soft boundary band. Set to 0 to disable."
+    )
 
     parser.add_argument(
         "--replace_flag",
@@ -393,6 +412,9 @@ if __name__ == '__main__':
                                             sam_use_negative_points=args.sam_use_negative_points,
                                             sam_negative_margin=args.sam_negative_margin,
                                             sam_reprompt_interval=args.sam_reprompt_interval,
+                                            soft_mask_mode=args.soft_mask_mode,
+                                            soft_mask_band_width=args.soft_mask_band_width,
+                                            soft_mask_blur_kernel=args.soft_mask_blur_kernel,
                                             iterations=args.iterations,
                                             k=args.k,
                                             w_len=args.w_len,
@@ -454,6 +476,11 @@ if __name__ == '__main__':
                 "sam_use_negative_points": args.sam_use_negative_points,
                 "sam_negative_margin": args.sam_negative_margin,
                 "sam_reprompt_interval": args.sam_reprompt_interval,
+            },
+            soft_mask_settings={
+                "soft_mask_mode": args.soft_mask_mode,
+                "soft_mask_band_width": args.soft_mask_band_width,
+                "soft_mask_blur_kernel": args.soft_mask_blur_kernel,
             },
             qa_outputs=pipeline_outputs.get("qa_outputs", {}),
         )

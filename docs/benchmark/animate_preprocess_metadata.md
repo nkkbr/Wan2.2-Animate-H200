@@ -29,8 +29,9 @@
 - `processing.lossless_intermediate`: 是否启用了推荐的高保真中间格式布局
 - `processing.control_stabilization`: face / pose 稳定化参数快照
 - `processing.sam2_mask_generation`: replacement 模式下 SAM2 chunk / prompt / negative-point 参数快照
+- `processing.soft_mask`: soft mask / boundary band 参数快照
 - `qa_outputs`: 可选的 QA overlay 与曲线产物
-  - 例如 `face_bbox_overlay`、`pose_overlay`、`mask_overlay`、`sam_prompts_overlay`、`mask_stats`
+  - 例如 `face_bbox_overlay`、`pose_overlay`、`mask_overlay`、`soft_band_overlay`、`sam_prompts_overlay`、`mask_stats`
 
 ## `src_files`
 
@@ -89,6 +90,16 @@
   - `value_range`: `[0.0, 1.0]`
   - `stored_value_range`: `[0, 255]` for `mp4/png_seq`, `[0.0, 1.0]` for `npz`
   - `mask_semantics`: `person_foreground`
+- `soft_band` (optional)
+  - `path`: 例如 `src_soft_band.mp4`、`src_soft_band/` 或 `src_soft_band.npz`
+  - `type`: `video`
+  - `format`: `mp4`、`png_seq` 或 `npz`
+  - `frame_count/height/width`
+  - `channels`: `1`
+  - `stored_channels`: `3` for `mp4`, `1` for `png_seq/npz`
+  - `dtype/shape/fps`
+  - `value_range`: `[0.0, 1.0]`
+  - `mask_semantics`: `boundary_transition_band`
 
 ## Color Contract
 

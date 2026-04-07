@@ -16,7 +16,6 @@ import torch
 import torch.distributed as dist
 from peft import set_peft_model_state_dict
 from tqdm import tqdm
-import torch.nn.functional as F
 from .distributed.fsdp import shard_model
 from .distributed.sequence_parallel import sp_attn_forward, sp_dit_forward
 from .distributed.util import get_world_size
@@ -40,7 +39,8 @@ from .utils.animate_contract import (
     validate_loaded_preprocess_bundle,
     validate_refert_num,
 )
-from .utils.media_io import load_person_mask_artifact, load_rgb_artifact
+from .utils.media_io import load_mask_artifact, load_person_mask_artifact, load_rgb_artifact, write_person_mask_artifact
+from .utils.replacement_masks import compose_background_keep_mask, derive_replacement_regions, resize_mask_volume
 
 
 
@@ -291,6 +291,100 @@ class WanAnimate:
         person_mask_images = load_person_mask_artifact(src_mask_artifact["path"], src_mask_artifact.get("format"))
         return bg_images, person_mask_images
 
+    def _prepare_replacement_masks(
+        self,
+        *,
+        person_mask_images,
+        soft_band_images,
+        lat_h,
+        lat_w,
+        mask_mode,
+        boundary_strength,
+        downsample_mode,
+        transition_low,
+        transition_high,
+    ):
+        person_mask = torch.as_tensor(np.asarray(person_mask_images), dtype=torch.float32)
+        soft_band = None
+        if soft_band_images is not None:
+            soft_band = torch.as_tensor(np.asarray(soft_band_images), dtype=torch.float32)
+        background_keep = compose_background_keep_mask(
+            person_mask,
+            soft_band=soft_band,
+            mode=mask_mode,
+            boundary_strength=boundary_strength,
+        )
+        background_keep_latent = resize_mask_volume(
+            background_keep,
+            output_size=(lat_h, lat_w),
+            mode=downsample_mode,
+        )
+        soft_band_latent = None
+        if soft_band is not None:
+            soft_band_latent = resize_mask_volume(
+                soft_band,
+                output_size=(lat_h, lat_w),
+                mode=downsample_mode,
+            )
+        pixel_regions = derive_replacement_regions(
+            background_keep,
+            transition_low=transition_low,
+            transition_high=transition_high,
+        )
+        latent_regions = derive_replacement_regions(
+            background_keep_latent,
+            transition_low=transition_low,
+            transition_high=transition_high,
+        )
+        return {
+            "person_mask": person_mask,
+            "soft_band": soft_band,
+            "background_keep": background_keep,
+            "background_keep_latent": background_keep_latent,
+            "soft_band_latent": soft_band_latent,
+            "pixel_regions": pixel_regions,
+            "latent_regions": latent_regions,
+        }
+
+    def _write_replacement_mask_debug(
+        self,
+        *,
+        save_debug_dir,
+        fps,
+        replacement_masks,
+        real_frame_len,
+    ):
+        if save_debug_dir is None:
+            return {}
+        debug_dir = Path(save_debug_dir)
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        artifacts = {}
+        mask_artifacts = {
+            "person_mask_hard": replacement_masks["person_mask"][:real_frame_len].cpu().numpy(),
+            "background_keep_mask": replacement_masks["background_keep"][:real_frame_len].cpu().numpy(),
+            "transition_band": replacement_masks["pixel_regions"]["transition_band"][:real_frame_len].cpu().numpy(),
+            "free_replacement_region": replacement_masks["pixel_regions"]["free_replacement"][:real_frame_len].cpu().numpy(),
+            "replacement_strength": replacement_masks["pixel_regions"]["replacement_strength"][:real_frame_len].cpu().numpy(),
+            "latent_background_keep_mask": replacement_masks["background_keep_latent"][:real_frame_len].cpu().numpy(),
+            "latent_transition_band": replacement_masks["latent_regions"]["transition_band"][:real_frame_len].cpu().numpy(),
+        }
+        if replacement_masks["soft_band"] is not None:
+            mask_artifacts["soft_band"] = replacement_masks["soft_band"][:real_frame_len].cpu().numpy()
+        if replacement_masks["soft_band_latent"] is not None:
+            mask_artifacts["latent_soft_band"] = replacement_masks["soft_band_latent"][:real_frame_len].cpu().numpy()
+
+        for stem, mask_frames in mask_artifacts.items():
+            artifact = write_person_mask_artifact(
+                mask_frames=mask_frames,
+                output_root=debug_dir,
+                stem=stem,
+                artifact_format="mp4",
+                fps=fps,
+                mask_semantics=stem,
+            )
+            artifacts[stem] = str((debug_dir / artifact["path"]).resolve())
+        return artifacts
+
     def _encode_text_conditions(self, input_prompt, n_prompt, offload_model, guide_scale):
         start_time = time.perf_counter()
         context_null = None
@@ -347,6 +441,11 @@ class WanAnimate:
         replace_flag=False,
         clip_len=77,
         refert_num=5,
+        replacement_mask_mode="soft_band",
+        replacement_mask_downsample_mode="area",
+        replacement_boundary_strength=0.5,
+        replacement_transition_low=0.1,
+        replacement_transition_high=0.9,
         shift=5.0,
         sample_solver='dpm++',
         sampling_steps=20,
@@ -458,11 +557,14 @@ class WanAnimate:
         cond_images = self.inputs_padding(cond_images, target_len)
         face_images = self.inputs_padding(face_images, target_len)
         
+        soft_band_images = None
         if replace_flag:
             bg_images, person_mask_images = self.prepare_source_for_replace(
                 src_bg_artifact=artifacts["background"],
                 src_mask_artifact=artifacts["person_mask"],
             )
+            if "soft_band" in artifacts:
+                soft_band_images = load_mask_artifact(artifacts["soft_band"]["path"], artifacts["soft_band"].get("format"))
             validate_loaded_preprocess_bundle(
                 cond_images=np.asarray(cond_images[:real_frame_len]),
                 face_images=np.asarray(face_images[:real_frame_len]),
@@ -470,9 +572,12 @@ class WanAnimate:
                 metadata=preprocess_metadata,
                 bg_images=bg_images,
                 person_mask_images=person_mask_images,
+                soft_band_images=soft_band_images,
             )
             bg_images = self.inputs_padding(bg_images, target_len)
             person_mask_images = self.inputs_padding(person_mask_images, target_len)
+            if soft_band_images is not None:
+                soft_band_images = self.inputs_padding(soft_band_images, target_len)
         else:
             validate_loaded_preprocess_bundle(
                 cond_images=np.asarray(cond_images[:real_frame_len]),
@@ -489,6 +594,32 @@ class WanAnimate:
             lat_h=lat_h,
             lat_w=lat_w,
         )
+        replacement_masks = None
+        replacement_mask_debug = {}
+        if replace_flag:
+            if soft_band_images is None and replacement_mask_mode != "hard":
+                logging.warning(
+                    "replacement_mask_mode=%s requested, but preprocess bundle has no soft_band artifact. Falling back to hard mask.",
+                    replacement_mask_mode,
+                )
+                replacement_mask_mode = "hard"
+            replacement_masks = self._prepare_replacement_masks(
+                person_mask_images=np.asarray(person_mask_images),
+                soft_band_images=np.asarray(soft_band_images) if soft_band_images is not None else None,
+                lat_h=lat_h,
+                lat_w=lat_w,
+                mask_mode=replacement_mask_mode,
+                boundary_strength=replacement_boundary_strength,
+                downsample_mode=replacement_mask_downsample_mode,
+                transition_low=replacement_transition_low,
+                transition_high=replacement_transition_high,
+            )
+            replacement_mask_debug = self._write_replacement_mask_debug(
+                save_debug_dir=save_debug_dir,
+                fps=preprocess_metadata["fps"] if preprocess_metadata is not None else 30,
+                replacement_masks=replacement_masks,
+                real_frame_len=real_frame_len,
+            )
         static_condition_encode_sec = text_condition_encode_sec + reference_condition_encode_sec
 
         runtime_stats = {
@@ -500,11 +631,19 @@ class WanAnimate:
             "guide_scale": float(guide_scale),
             "real_frame_len": int(real_frame_len),
             "target_len": int(target_len),
+            "replacement_mask_mode": replacement_mask_mode if replace_flag else None,
+            "replacement_mask_downsample_mode": replacement_mask_downsample_mode if replace_flag else None,
+            "replacement_boundary_strength": float(replacement_boundary_strength) if replace_flag else None,
+            "replacement_transition_low": float(replacement_transition_low) if replace_flag else None,
+            "replacement_transition_high": float(replacement_transition_high) if replace_flag else None,
+            "soft_band_available": bool(soft_band_images is not None) if replace_flag else False,
             "text_condition_encode_sec": text_condition_encode_sec,
             "reference_condition_encode_sec": reference_condition_encode_sec,
             "static_condition_encode_sec": static_condition_encode_sec,
             "clip_stats": [],
         }
+        if replacement_mask_debug:
+            runtime_stats["replacement_mask_debug"] = replacement_mask_debug
         if log_runtime_stats:
             logging.info(
                 "Static animate conditions encoded once: text=%.3fs reference=%.3fs total=%.3fs",
@@ -533,7 +672,6 @@ class WanAnimate:
             batch = {
                         "conditioning_pixel_values": torch.zeros(1, 3, clip_len, height, width),
                         "bg_pixel_values": torch.zeros(1, 3, clip_len, height, width),
-                        "person_mask_pixel_values": torch.zeros(1, 1, clip_len, height, width),
                         "face_pixel_values": torch.zeros(1, 3, clip_len, 512, 512),
                         "refer_pixel_values": torch.zeros(1, 3, height, width),
                         "refer_t_pixel_values": torch.zeros(refert_num, 3, height, width)
@@ -568,12 +706,6 @@ class WanAnimate:
                     "t h w c -> 1 c t h w",
                 )
 
-                batch["person_mask_pixel_values"] = rearrange(
-                    torch.tensor(np.stack(person_mask_images[start:end])[:, :, :, None]),
-                    "t h w c -> 1 t c h w",
-                )
-                
-
             for key, value in batch.items():
                 if isinstance(value, torch.Tensor):
                     batch[key] = value.to(device=self.device, dtype=torch.bfloat16)
@@ -586,6 +718,11 @@ class WanAnimate:
             T = clip_len
             lat_t = T // 4 + 1
             target_shape = [lat_t + 1, lat_h, lat_w]
+            clip_background_keep_latent = None
+            clip_transition_band_latent = None
+            if replace_flag:
+                clip_background_keep_latent = replacement_masks["background_keep_latent"][start:end].to(device=self.device, dtype=torch.float32)
+                clip_transition_band_latent = replacement_masks["latent_regions"]["transition_band"][start:end].to(device=self.device, dtype=torch.float32)
             noise = [
                 torch.randn(
                     16,
@@ -642,11 +779,14 @@ class WanAnimate:
                                 torch.concat([refer_t_pixel_values[0, :, :mask_reft_len], bg_pixel_values[0, :, mask_reft_len:]], dim=1).to(self.device)
                             ]
                         )[0]
-                        background_keep_mask_pixel_values = 1 - batch["person_mask_pixel_values"]
-                        background_keep_mask_pixel_values = rearrange(background_keep_mask_pixel_values, "b t c h w -> (b t) c h w")
-                        background_keep_mask_pixel_values = F.interpolate(background_keep_mask_pixel_values, size=(H//8, W//8), mode='nearest')
-                        background_keep_mask_pixel_values = rearrange(background_keep_mask_pixel_values, "(b t) c h w -> b t c h w", b=1)[:,:,0]
-                        msk_reft = self.get_i2v_mask(lat_t, lat_h, lat_w, mask_reft_len, mask_pixel_values=background_keep_mask_pixel_values, device=self.device)
+                        msk_reft = self.get_i2v_mask(
+                            lat_t,
+                            lat_h,
+                            lat_w,
+                            mask_reft_len,
+                            mask_pixel_values=clip_background_keep_latent[None],
+                            device=self.device,
+                        )
                     else:
                         y_reft = self.vae.encode(
                             [
@@ -664,10 +804,6 @@ class WanAnimate:
                 else:
                     if replace_flag:
                         bg_pixel_values = batch["bg_pixel_values"]
-                        background_keep_mask_pixel_values = 1 - batch["person_mask_pixel_values"]
-                        background_keep_mask_pixel_values = rearrange(background_keep_mask_pixel_values, "b t c h w -> (b t) c h w")
-                        background_keep_mask_pixel_values = F.interpolate(background_keep_mask_pixel_values, size=(H//8, W//8), mode='nearest')
-                        background_keep_mask_pixel_values = rearrange(background_keep_mask_pixel_values, "(b t) c h w -> b t c h w", b=1)[:,:,0]
                         y_reft = self.vae.encode(
                             [
                                 torch.concat(
@@ -678,7 +814,14 @@ class WanAnimate:
                                 ).to(self.device)
                             ]
                         )[0]
-                        msk_reft = self.get_i2v_mask(lat_t, lat_h, lat_w, mask_reft_len, mask_pixel_values=background_keep_mask_pixel_values, device=self.device)
+                        msk_reft = self.get_i2v_mask(
+                            lat_t,
+                            lat_h,
+                            lat_w,
+                            mask_reft_len,
+                            mask_pixel_values=clip_background_keep_latent[None],
+                            device=self.device,
+                        )
                     else:
                         y_reft = self.vae.encode(
                             [
@@ -777,6 +920,13 @@ class WanAnimate:
                     "peak_memory_bytes": clip_peak_memory_bytes,
                     "peak_memory_gb": round(clip_peak_memory_bytes / (1024 ** 3), 3) if clip_peak_memory_bytes is not None else None,
                 }
+                if replace_flag:
+                    clip_stats.update({
+                        "background_keep_mean": float(clip_background_keep_latent.mean().item()),
+                        "background_keep_min": float(clip_background_keep_latent.min().item()),
+                        "background_keep_max": float(clip_background_keep_latent.max().item()),
+                        "transition_ratio": float(clip_transition_band_latent.mean().item()),
+                    })
                 runtime_stats["clip_stats"].append(clip_stats)
                 if log_runtime_stats:
                     logging.info(

@@ -105,6 +105,10 @@ def _validate_args(args):
         assert args.src_root_path is not None, "Please specify --src_root_path for Wan-Animate."
         assert Path(args.src_root_path).exists(), f"src_root_path does not exist: {args.src_root_path}"
         args.refert_num = validate_refert_num(args.refert_num)
+        assert 0.0 <= args.replacement_boundary_strength <= 1.0, "--replacement_boundary_strength must be in [0, 1]."
+        assert 0.0 <= args.replacement_transition_low < args.replacement_transition_high <= 1.0, (
+            "--replacement_transition_low and --replacement_transition_high must satisfy 0 <= low < high <= 1."
+        )
 
     if args.sample_steps is None:
         args.sample_steps = cfg.sample_steps
@@ -315,6 +319,38 @@ def _parse_args():
         action="store_true",
         default=False,
         help="Whether to use relighting lora.")
+    parser.add_argument(
+        "--replacement_mask_mode",
+        type=str,
+        default="soft_band",
+        choices=["hard", "soft_band"],
+        help="Mask composition strategy for Wan-Animate replacement. 'soft_band' uses the preprocess soft boundary band when available."
+    )
+    parser.add_argument(
+        "--replacement_mask_downsample_mode",
+        type=str,
+        default="area",
+        choices=["nearest", "area", "bilinear"],
+        help="How replacement masks are downsampled to latent spatial resolution."
+    )
+    parser.add_argument(
+        "--replacement_boundary_strength",
+        type=float,
+        default=0.5,
+        help="How strongly the soft boundary band reduces background-keep confidence near the replacement boundary."
+    )
+    parser.add_argument(
+        "--replacement_transition_low",
+        type=float,
+        default=0.1,
+        help="Lower threshold used to classify free-replacement regions in replacement mask debug views."
+    )
+    parser.add_argument(
+        "--replacement_transition_high",
+        type=float,
+        default=0.9,
+        help="Upper threshold used to classify hard-background-keep regions in replacement mask debug views."
+    )
     
     # following args only works for s2v
     parser.add_argument(
@@ -576,6 +612,11 @@ def generate(args):
                 src_root_path=args.src_root_path,
                 replace_flag=args.replace_flag,
                 refert_num=args.refert_num,
+                replacement_mask_mode=args.replacement_mask_mode,
+                replacement_mask_downsample_mode=args.replacement_mask_downsample_mode,
+                replacement_boundary_strength=args.replacement_boundary_strength,
+                replacement_transition_low=args.replacement_transition_low,
+                replacement_transition_high=args.replacement_transition_high,
                 clip_len=args.frame_num,
                 shift=args.sample_shift,
                 sample_solver=args.sample_solver,

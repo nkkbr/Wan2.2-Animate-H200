@@ -134,6 +134,7 @@ def write_person_mask_artifact(
     stem: str,
     artifact_format: str,
     fps: float,
+    mask_semantics: str = "person_foreground",
 ) -> dict:
     validate_person_mask_frames(stem, mask_frames)
     output_root = Path(output_root)
@@ -171,7 +172,7 @@ def write_person_mask_artifact(
         "fps": float(fps),
         "value_range": [0.0, 1.0],
         "stored_value_range": stored_value_range,
-        "mask_semantics": "person_foreground",
+        "mask_semantics": mask_semantics,
     }
 
 
@@ -199,7 +200,7 @@ def load_rgb_artifact(path: str | Path, artifact_format: str | None = None) -> n
     raise ValueError(f"Unsupported RGB artifact format: {artifact_format}")
 
 
-def load_person_mask_artifact(path: str | Path, artifact_format: str | None = None) -> np.ndarray:
+def load_mask_artifact(path: str | Path, artifact_format: str | None = None) -> np.ndarray:
     path = Path(path)
     artifact_format = artifact_format or infer_artifact_format(path)
     if artifact_format == "mp4":
@@ -226,6 +227,10 @@ def load_person_mask_artifact(path: str | Path, artifact_format: str | None = No
         raise ValueError(f"Unsupported person mask artifact format: {artifact_format}")
     validate_person_mask_frames(str(path), mask)
     return mask
+
+
+def load_person_mask_artifact(path: str | Path, artifact_format: str | None = None) -> np.ndarray:
+    return load_mask_artifact(path, artifact_format)
 
 
 def infer_output_format(save_file: str | None, output_format: str) -> str:
