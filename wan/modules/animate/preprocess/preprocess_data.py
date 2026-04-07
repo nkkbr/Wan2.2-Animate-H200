@@ -480,8 +480,8 @@ def _parse_args():
         "--reference_normalization_mode",
         type=str,
         default="none",
-        choices=["none", "bbox_match"],
-        help="Optional replacement reference normalization strategy. 'bbox_match' scales and re-centers the reference subject to match the driver subject occupancy."
+        choices=["none", "bbox_match", "structure_match"],
+        help="Optional replacement reference normalization strategy. 'bbox_match' scales and re-centers the reference subject to match the driver subject occupancy. 'structure_match' additionally aligns head/torso/leg proportions and shoulder width using a structure-aware warp."
     )
     parser.add_argument(
         "--reference_target_bbox_source",
@@ -513,6 +513,30 @@ def _parse_args():
         type=float,
         default=1.6,
         help="Upper clamp for the reference normalization scale factor."
+    )
+    parser.add_argument(
+        "--reference_structure_segment_clamp_min",
+        type=float,
+        default=0.8,
+        help="Lower clamp for per-segment structure scaling in structure_match mode."
+    )
+    parser.add_argument(
+        "--reference_structure_segment_clamp_max",
+        type=float,
+        default=1.25,
+        help="Upper clamp for per-segment structure scaling in structure_match mode."
+    )
+    parser.add_argument(
+        "--reference_structure_width_budget_ratio",
+        type=float,
+        default=1.05,
+        help="Maximum allowed normalized reference width relative to the driver replacement-region width budget."
+    )
+    parser.add_argument(
+        "--reference_structure_height_budget_ratio",
+        type=float,
+        default=1.05,
+        help="Maximum allowed normalized reference height relative to the driver replacement-region height budget."
     )
 
     parser.add_argument(
@@ -597,6 +621,12 @@ if __name__ == '__main__':
         raise ValueError("reference_scale_clamp_min and reference_scale_clamp_max must be > 0.")
     if args.reference_scale_clamp_min > args.reference_scale_clamp_max:
         raise ValueError("reference_scale_clamp_min must be <= reference_scale_clamp_max.")
+    if args.reference_structure_segment_clamp_min <= 0 or args.reference_structure_segment_clamp_max <= 0:
+        raise ValueError("reference_structure_segment_clamp_min and reference_structure_segment_clamp_max must be > 0.")
+    if args.reference_structure_segment_clamp_min > args.reference_structure_segment_clamp_max:
+        raise ValueError("reference_structure_segment_clamp_min must be <= reference_structure_segment_clamp_max.")
+    if args.reference_structure_width_budget_ratio <= 0 or args.reference_structure_height_budget_ratio <= 0:
+        raise ValueError("reference_structure_width_budget_ratio and reference_structure_height_budget_ratio must be > 0.")
     if args.bg_video_window_radius < 1:
         raise ValueError("bg_video_window_radius must be >= 1.")
     if args.bg_video_min_visible_count < 1:
@@ -713,6 +743,10 @@ if __name__ == '__main__':
                                             reference_bbox_conf_thresh=args.reference_bbox_conf_thresh,
                                             reference_scale_clamp_min=args.reference_scale_clamp_min,
                                             reference_scale_clamp_max=args.reference_scale_clamp_max,
+                                            reference_structure_segment_clamp_min=args.reference_structure_segment_clamp_min,
+                                            reference_structure_segment_clamp_max=args.reference_structure_segment_clamp_max,
+                                            reference_structure_width_budget_ratio=args.reference_structure_width_budget_ratio,
+                                            reference_structure_height_budget_ratio=args.reference_structure_height_budget_ratio,
                                             iterations=args.iterations,
                                             k=args.k,
                                             w_len=args.w_len,
@@ -833,6 +867,10 @@ if __name__ == '__main__':
                 "reference_bbox_conf_thresh": args.reference_bbox_conf_thresh,
                 "reference_scale_clamp_min": args.reference_scale_clamp_min,
                 "reference_scale_clamp_max": args.reference_scale_clamp_max,
+                "reference_structure_segment_clamp_min": args.reference_structure_segment_clamp_min,
+                "reference_structure_segment_clamp_max": args.reference_structure_segment_clamp_max,
+                "reference_structure_width_budget_ratio": args.reference_structure_width_budget_ratio,
+                "reference_structure_height_budget_ratio": args.reference_structure_height_budget_ratio,
                 "stats": pipeline_outputs.get("reference_normalization", {}),
             },
             runtime_stats=pipeline_outputs.get("runtime_stats", {}),

@@ -55,10 +55,15 @@ from parsing_adapter import make_parsing_overlay, run_parsing_adapter
 from reference_normalization import (
     bbox_from_pose_meta,
     estimate_driver_target_bbox,
+    estimate_driver_target_structure,
     make_reference_normalization_preview,
     normalize_reference_image,
+    normalize_reference_image_structure_aware,
     project_bbox_with_letterbox,
+    project_structure_with_letterbox,
     scale_bbox_between_shapes,
+    scale_structure_between_shapes,
+    structure_from_pose_meta,
     write_reference_image,
 )
 
@@ -178,6 +183,10 @@ class ProcessPipeline():
         reference_bbox_conf_thresh=0.35,
         reference_scale_clamp_min=0.75,
         reference_scale_clamp_max=1.6,
+        reference_structure_segment_clamp_min=0.8,
+        reference_structure_segment_clamp_max=1.25,
+        reference_structure_width_budget_ratio=1.05,
+        reference_structure_height_budget_ratio=1.05,
         iterations=3,
         k=7,
         w_len=1,
@@ -293,8 +302,19 @@ class ProcessPipeline():
             reference_original_height, reference_original_width = refer_img.shape[:2]
             reference_bbox_detection = None
             reference_bbox_original = None
+            reference_structure_detection = None
+            reference_structure_original = None
             driver_target_bbox = None
+            driver_target_structure = None
+            driver_target_bbox_export = None
+            driver_target_structure_export = None
             driver_target_stats = {
+                "source": reference_target_bbox_source,
+                "used_frames": 0,
+                "valid_frames": 0,
+                "frame_indices": [],
+            }
+            driver_target_structure_stats = {
                 "source": reference_target_bbox_source,
                 "used_frames": 0,
                 "valid_frames": 0,
@@ -308,11 +328,14 @@ class ProcessPipeline():
                 "target_bbox_frames": int(reference_target_bbox_frames),
                 "bbox_conf_thresh": float(reference_bbox_conf_thresh),
                 "driver_target_bbox_stats": driver_target_stats,
+                "driver_target_structure_stats": driver_target_structure_stats,
                 "reference_detection_shape": None,
                 "reference_bbox_detection": None,
                 "reference_bbox_original": None,
+                "reference_structure_detection": None,
+                "reference_structure_original": None,
             }
-            if reference_normalization_mode == "bbox_match":
+            if reference_normalization_mode in {"bbox_match", "structure_match"}:
                 reference_detection_img = self._resize_frame_with_analysis_policy(
                     refer_img,
                     target_area=analysis_target_area,
@@ -325,43 +348,90 @@ class ProcessPipeline():
                     image_shape=reference_detection_img.shape[:2],
                     conf_thresh=reference_bbox_conf_thresh,
                 )
+                reference_structure_detection = structure_from_pose_meta(
+                    reference_pose_meta,
+                    image_shape=reference_detection_img.shape[:2],
+                    conf_thresh=reference_bbox_conf_thresh,
+                )
                 reference_bbox_original = scale_bbox_between_shapes(
                     reference_bbox_detection,
                     from_shape=reference_detection_img.shape[:2],
                     to_shape=refer_img.shape[:2],
                 )
+                reference_structure_original = scale_structure_between_shapes(
+                    reference_structure_detection,
+                    from_shape=reference_detection_img.shape[:2],
+                    to_shape=refer_img.shape[:2],
+                )
                 driver_target_bbox, driver_target_stats = estimate_driver_target_bbox(
                     tpl_pose_metas,
-                    image_shape=(height, width),
+                    image_shape=(analysis_height, analysis_width),
+                    source=reference_target_bbox_source,
+                    num_frames=reference_target_bbox_frames,
+                    conf_thresh=reference_bbox_conf_thresh,
+                )
+                driver_target_structure, driver_target_structure_stats = estimate_driver_target_structure(
+                    tpl_pose_metas,
+                    image_shape=(analysis_height, analysis_width),
                     source=reference_target_bbox_source,
                     num_frames=reference_target_bbox_frames,
                     conf_thresh=reference_bbox_conf_thresh,
                 )
                 reference_normalization.update({
                     "driver_target_bbox_stats": driver_target_stats,
+                    "driver_target_structure_stats": driver_target_structure_stats,
                     "reference_detection_shape": [
                         int(reference_detection_img.shape[0]),
                         int(reference_detection_img.shape[1]),
                     ],
                     "reference_bbox_detection": None if reference_bbox_detection is None else [float(v) for v in reference_bbox_detection.tolist()],
                     "reference_bbox_original": None if reference_bbox_original is None else [float(v) for v in reference_bbox_original.tolist()],
+                    "reference_structure_detection": reference_structure_detection,
+                    "reference_structure_original": reference_structure_original,
                 })
                 driver_target_bbox_export = driver_target_bbox
-                if driver_target_bbox is not None and (analysis_height != height or analysis_width != width):
-                    driver_target_bbox_export = scale_bbox_between_shapes(
-                        driver_target_bbox,
-                        from_shape=(analysis_height, analysis_width),
-                        to_shape=(height, width),
+                driver_target_structure_export = driver_target_structure
+                if analysis_height != height or analysis_width != width:
+                    if driver_target_bbox is not None:
+                        driver_target_bbox_export = scale_bbox_between_shapes(
+                            driver_target_bbox,
+                            from_shape=(analysis_height, analysis_width),
+                            to_shape=(height, width),
+                        )
+                    if driver_target_structure is not None:
+                        driver_target_structure_export = scale_structure_between_shapes(
+                            driver_target_structure,
+                            from_shape=(analysis_height, analysis_width),
+                            to_shape=(height, width),
+                        )
+
+                if reference_normalization_mode == "structure_match":
+                    normalized_reference, normalization_stats = normalize_reference_image_structure_aware(
+                        refer_img,
+                        reference_structure=reference_structure_original,
+                        target_structure=driver_target_structure_export,
+                        canvas_shape=(height, width),
+                        scale_clamp_min=reference_scale_clamp_min,
+                        scale_clamp_max=reference_scale_clamp_max,
+                        segment_clamp_min=reference_structure_segment_clamp_min,
+                        segment_clamp_max=reference_structure_segment_clamp_max,
+                        width_budget_ratio=reference_structure_width_budget_ratio,
+                        height_budget_ratio=reference_structure_height_budget_ratio,
                     )
-                normalized_reference, normalization_stats = normalize_reference_image(
-                    refer_img,
-                    reference_bbox=reference_bbox_original,
-                    target_bbox=driver_target_bbox_export,
-                    canvas_shape=(height, width),
-                    scale_clamp_min=reference_scale_clamp_min,
-                    scale_clamp_max=reference_scale_clamp_max,
-                )
+                else:
+                    normalized_reference, normalization_stats = normalize_reference_image(
+                        refer_img,
+                        reference_bbox=reference_bbox_original,
+                        target_bbox=driver_target_bbox_export,
+                        canvas_shape=(height, width),
+                        scale_clamp_min=reference_scale_clamp_min,
+                        scale_clamp_max=reference_scale_clamp_max,
+                    )
                 reference_normalization.update(normalization_stats)
+                reference_normalization.update({
+                    "driver_target_bbox_export": None if driver_target_bbox_export is None else [float(v) for v in driver_target_bbox_export.tolist()],
+                    "driver_target_structure_export": driver_target_structure_export,
+                })
                 if normalized_reference is not None:
                     normalized_path = os.path.join(output_path, "src_ref_normalized.png")
                     write_reference_image(normalized_path, normalized_reference)
@@ -736,13 +806,21 @@ class ProcessPipeline():
                         image_shape=refer_img.shape[:2],
                         canvas_shape=(height, width),
                     )
+                    original_structure_canvas = project_structure_with_letterbox(
+                        reference_structure_original,
+                        image_shape=refer_img.shape[:2],
+                        canvas_shape=(height, width),
+                    )
                     normalized_bbox = reference_normalization.get("normalized_bbox")
                     preview = make_reference_normalization_preview(
                         original_canvas=original_canvas,
                         normalized_canvas=refer_canvas,
                         original_bbox=original_bbox_canvas,
-                        target_bbox=driver_target_bbox,
+                        target_bbox=driver_target_bbox_export,
                         normalized_bbox=normalized_bbox,
+                        original_structure=original_structure_canvas,
+                        target_structure=driver_target_structure_export,
+                        normalized_structure=reference_normalization.get("normalized_structure"),
                     )
                     preview_path = os.path.join(output_path, "reference_normalization_preview.png")
                     write_reference_image(preview_path, preview)
