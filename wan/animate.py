@@ -46,6 +46,7 @@ from .utils.clip_blending import (
     write_seam_debug_artifacts,
     write_seam_summary,
 )
+from .utils.guidance import combine_animate_guidance_predictions
 from .utils.media_io import load_mask_artifact, load_person_mask_artifact, load_rgb_artifact, write_person_mask_artifact
 from .utils.replacement_masks import compose_background_keep_mask, derive_replacement_regions, resize_mask_volume
 
@@ -392,20 +393,20 @@ class WanAnimate:
             artifacts[stem] = str((debug_dir / artifact["path"]).resolve())
         return artifacts
 
-    def _encode_text_conditions(self, input_prompt, n_prompt, offload_model, guide_scale):
+    def _encode_text_conditions(self, input_prompt, n_prompt, offload_model, need_negative_text):
         start_time = time.perf_counter()
         context_null = None
         if not self.t5_cpu:
             self.text_encoder.model.to(self.device)
             context = self.text_encoder([input_prompt], self.device)
-            if guide_scale > 1:
+            if need_negative_text:
                 context_null = self.text_encoder([n_prompt], self.device)
             if offload_model:
                 self.text_encoder.model.cpu()
         else:
             context = self.text_encoder([input_prompt], torch.device('cpu'))
             context = [t.to(self.device) for t in context]
-            if guide_scale > 1:
+            if need_negative_text:
                 context_null = self.text_encoder([n_prompt], torch.device('cpu'))
                 context_null = [t.to(self.device) for t in context_null]
         return context, context_null, time.perf_counter() - start_time
@@ -453,6 +454,43 @@ class WanAnimate:
             "overlap_after_curr": summarize_scalar_series([item["overlap_mad_after_curr"] for item in seam_stats]),
         }
 
+    def _resolve_guidance_config(self, guidance_uncond_mode, face_guide_scale, text_guide_scale):
+        if guidance_uncond_mode not in {"legacy_both", "face_only", "text_only", "decoupled"}:
+            raise ValueError(f"Unsupported guidance_uncond_mode: {guidance_uncond_mode}")
+        face_guide_scale = float(face_guide_scale)
+        text_guide_scale = float(text_guide_scale)
+        if face_guide_scale < 1.0 or text_guide_scale < 1.0:
+            raise ValueError(
+                f"face_guide_scale and text_guide_scale must be >= 1.0. Got {face_guide_scale}, {text_guide_scale}."
+            )
+        if guidance_uncond_mode == "legacy_both":
+            if abs(face_guide_scale - text_guide_scale) > 1e-6:
+                raise ValueError(
+                    "legacy_both guidance requires matching face/text guide scales."
+                )
+            return {
+                "mode": guidance_uncond_mode,
+                "need_negative_text": face_guide_scale > 1.0,
+                "legacy_scale": face_guide_scale,
+                "face_scale": face_guide_scale,
+                "text_scale": text_guide_scale,
+                "use_face_branch": False,
+                "use_text_branch": False,
+                "forward_passes_per_step": 2 if face_guide_scale > 1.0 else 1,
+            }
+        use_face_branch = guidance_uncond_mode in {"face_only", "decoupled"} and face_guide_scale > 1.0
+        use_text_branch = guidance_uncond_mode in {"text_only", "decoupled"} and text_guide_scale > 1.0
+        return {
+            "mode": guidance_uncond_mode,
+            "need_negative_text": use_text_branch,
+            "legacy_scale": None,
+            "face_scale": face_guide_scale,
+            "text_scale": text_guide_scale,
+            "use_face_branch": use_face_branch,
+            "use_text_branch": use_text_branch,
+            "forward_passes_per_step": 1 + int(use_face_branch) + int(use_text_branch),
+        }
+
     def generate(
         self,
         src_root_path,
@@ -462,6 +500,9 @@ class WanAnimate:
         overlap_blend_mode="mask_aware",
         overlap_background_current_strength=0.35,
         seam_debug_max_points=6,
+        guidance_uncond_mode="legacy_both",
+        face_guide_scale=1.0,
+        text_guide_scale=1.0,
         replacement_mask_mode="soft_band",
         replacement_mask_downsample_mode="area",
         replacement_boundary_strength=0.5,
@@ -497,6 +538,12 @@ class WanAnimate:
                 Current-clip alpha multiplier used in hard background-keep regions during mask-aware blending.
             seam_debug_max_points (`int`, *optional*, defaults to 6):
                 How many seam comparison bundles are exported under save_debug_dir.
+            guidance_uncond_mode (`str`, *optional*, defaults to "legacy_both"):
+                Guidance branch strategy. `legacy_both` preserves the original coupled text+face CFG behavior.
+            face_guide_scale (`float`, *optional*, defaults to 1.0):
+                Face expression guidance scale used by `face_only` and `decoupled` modes.
+            text_guide_scale (`float`, *optional*, defaults to 1.0):
+                Text guidance scale used by `text_only` and `decoupled` modes.
             shift (`float`, *optional*, defaults to 5.0):
                 Noise schedule shift parameter. 
             sample_solver (`str`, *optional*, defaults to 'dpm++'):
@@ -504,9 +551,8 @@ class WanAnimate:
             sampling_steps (`int`, *optional*, defaults to 20):
                 Number of diffusion sampling steps. Higher values improve quality but slow generation
             guide_scale (`float` or tuple[`float`], *optional*, defaults 1.0):
-                Classifier-free guidance scale. We only use it for expression control. 
-                In most cases, it's not necessary and faster generation can be achieved without it. 
-                When expression adjustments are needed, you may consider using this feature.
+                Legacy compatibility guidance scale. It is kept for backward compatibility and should be aligned with
+                face/text guide scales when using `legacy_both`.
             input_prompt (`str`):
                 Text prompt for content generation. We don't recommend custom prompts (although they work)
             n_prompt (`str`, *optional*, defaults to ""):
@@ -539,6 +585,11 @@ class WanAnimate:
             )
         if seam_debug_max_points < 0:
             raise ValueError(f"seam_debug_max_points must be >= 0. Got {seam_debug_max_points}.")
+        guidance_config = self._resolve_guidance_config(
+            guidance_uncond_mode=guidance_uncond_mode,
+            face_guide_scale=face_guide_scale,
+            text_guide_scale=text_guide_scale,
+        )
         self.last_runtime_stats = None
 
         seed_g = torch.Generator(device=self.device)
@@ -588,7 +639,7 @@ class WanAnimate:
             input_prompt=input_prompt,
             n_prompt=n_prompt,
             offload_model=offload_model,
-            guide_scale=guide_scale,
+            need_negative_text=guidance_config["need_negative_text"],
         )
 
         real_frame_len = len(cond_images)
@@ -672,6 +723,14 @@ class WanAnimate:
             "seam_debug_max_points": int(seam_debug_max_points),
             "sampling_steps": sampling_steps,
             "guide_scale": float(guide_scale),
+            "guidance_uncond_mode": guidance_config["mode"],
+            "face_guide_scale": float(guidance_config["face_scale"]),
+            "text_guide_scale": float(guidance_config["text_scale"]),
+            "legacy_guide_scale": (
+                float(guidance_config["legacy_scale"])
+                if guidance_config["legacy_scale"] is not None else None
+            ),
+            "guidance_forward_passes_per_step": int(guidance_config["forward_passes_per_step"]),
             "real_frame_len": int(real_frame_len),
             "target_len": int(target_len),
             "replacement_mask_mode": replacement_mask_mode if replace_flag else None,
@@ -697,10 +756,13 @@ class WanAnimate:
             runtime_stats["replacement_mask_debug"] = replacement_mask_debug
         if log_runtime_stats:
             logging.info(
-                "Static animate conditions encoded once: text=%.3fs reference=%.3fs total=%.3fs",
+                "Static animate conditions encoded once: text=%.3fs reference=%.3fs total=%.3fs guidance_mode=%s face_scale=%.2f text_scale=%.2f",
                 text_condition_encode_sec,
                 reference_condition_encode_sec,
                 static_condition_encode_sec,
+                guidance_config["mode"],
+                guidance_config["face_scale"],
+                guidance_config["text_scale"],
             )
 
         start = 0
@@ -899,9 +961,16 @@ class WanAnimate:
                     "face_pixel_values": face_pixel_values,
                 }
 
-                if guide_scale > 1:
+                arg_face_null = None
+                arg_text_null = None
+                arg_legacy_null = None
+                face_pixel_values_uncond = None
+                if guidance_config["use_face_branch"] or (
+                    guidance_config["mode"] == "legacy_both" and guidance_config["legacy_scale"] > 1.0
+                ):
                     face_pixel_values_uncond = face_pixel_values * 0 - 1
-                    arg_null = {
+                if guidance_config["mode"] == "legacy_both" and guidance_config["legacy_scale"] > 1.0:
+                    arg_legacy_null = {
                         "context": context_null,
                         "seq_len": max_seq_len,
                         "clip_fea": static_reference_conditions["clip_context"],
@@ -909,6 +978,25 @@ class WanAnimate:
                         "pose_latents": pose_latents,
                         "face_pixel_values": face_pixel_values_uncond,
                     }
+                else:
+                    if guidance_config["use_face_branch"]:
+                        arg_face_null = {
+                            "context": context,
+                            "seq_len": max_seq_len,
+                            "clip_fea": static_reference_conditions["clip_context"],
+                            "y": [y],
+                            "pose_latents": pose_latents,
+                            "face_pixel_values": face_pixel_values_uncond,
+                        }
+                    if guidance_config["use_text_branch"]:
+                        arg_text_null = {
+                            "context": context_null,
+                            "seq_len": max_seq_len,
+                            "clip_fea": static_reference_conditions["clip_context"],
+                            "y": [y],
+                            "pose_latents": pose_latents,
+                            "face_pixel_values": face_pixel_values,
+                        }
 
                 sampling_start_time = time.perf_counter()
                 for i, t in enumerate(tqdm(timesteps)):
@@ -921,17 +1009,38 @@ class WanAnimate:
                          self.noise_model(TensorList(latent_model_input), t=timestep, **arg_c)
                     )
 
-                    if guide_scale > 1:
-                        noise_pred_uncond = TensorList(
-                             self.noise_model(
-                                TensorList(latent_model_input), t=timestep, **arg_null
+                    noise_pred_legacy_null = None
+                    noise_pred_face_null = None
+                    noise_pred_text_null = None
+                    if guidance_config["mode"] == "legacy_both" and guidance_config["legacy_scale"] > 1.0:
+                        noise_pred_legacy_null = TensorList(
+                            self.noise_model(
+                                TensorList(latent_model_input), t=timestep, **arg_legacy_null
                             )
                         )
-                        noise_pred = noise_pred_uncond + guide_scale * (
-                            noise_pred_cond - noise_pred_uncond
-                        )
                     else:
-                        noise_pred = noise_pred_cond
+                        if guidance_config["use_face_branch"]:
+                            noise_pred_face_null = TensorList(
+                                self.noise_model(
+                                    TensorList(latent_model_input), t=timestep, **arg_face_null
+                                )
+                            )
+                        if guidance_config["use_text_branch"]:
+                            noise_pred_text_null = TensorList(
+                                self.noise_model(
+                                    TensorList(latent_model_input), t=timestep, **arg_text_null
+                                )
+                            )
+                    noise_pred = combine_animate_guidance_predictions(
+                        cond_pred=noise_pred_cond,
+                        guidance_mode=guidance_config["mode"],
+                        legacy_scale=guidance_config["legacy_scale"],
+                        face_scale=guidance_config["face_scale"],
+                        text_scale=guidance_config["text_scale"],
+                        legacy_null_pred=noise_pred_legacy_null,
+                        face_null_pred=noise_pred_face_null,
+                        text_null_pred=noise_pred_text_null,
+                    )
 
                     temp_x0 = sample_scheduler.step(
                         noise_pred[0].unsqueeze(0),
@@ -1013,6 +1122,8 @@ class WanAnimate:
                     "start_frame": int(start),
                     "end_frame": int(end),
                     "mask_reft_len": int(mask_reft_len),
+                    "guidance_mode": guidance_config["mode"],
+                    "guidance_forward_passes_per_step": int(guidance_config["forward_passes_per_step"]),
                     "vae_encode_sec": clip_vae_encode_sec,
                     "sampling_sec": clip_sampling_sec,
                     "vae_decode_sec": clip_vae_decode_sec,

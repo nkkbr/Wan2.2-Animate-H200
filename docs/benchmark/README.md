@@ -101,6 +101,18 @@ clip overlap blending / seam debug 检查脚本见：
 
 - `scripts/eval/check_clip_blending.py`
 
+guidance 解耦 / 参数搜索检查脚本见：
+
+- `scripts/eval/check_guidance_and_parameter_search.py`
+
+animate 参数搜索计划脚本见：
+
+- `scripts/eval/run_animate_parameter_search.py`
+
+animate 参数搜索汇总脚本见：
+
+- `scripts/eval/summarize_animate_parameter_search.py`
+
 ## 7. 后续建议
 
 后续应把外部 benchmark 素材逐步补充到统一 manifest 中，并且每个新增素材都附带：

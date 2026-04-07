@@ -70,6 +70,10 @@ EXAMPLE_PROMPT = {
 QUALITY_PRESETS = ("none", "hq_h200")
 
 
+def _cli_provided(flag: str) -> bool:
+    return any(arg == flag or arg.startswith(f"{flag}=") for arg in sys.argv[1:])
+
+
 def _validate_args(args):
     # Basic check
     assert args.ckpt_dir is not None, "Please specify the checkpoint directory."
@@ -95,8 +99,20 @@ def _validate_args(args):
     if args.quality_preset != "none":
         assert "animate" in args.task, "--quality_preset is currently only supported for Wan-Animate."
         if args.quality_preset == "hq_h200":
-            if args.sample_steps is None:
-                args.sample_steps = 40
+            if not _cli_provided("--sample_solver"):
+                args.sample_solver = "dpm++"
+            if args.sample_steps is None and not _cli_provided("--sample_steps"):
+                args.sample_steps = 60
+            if args.sample_shift is None and not _cli_provided("--sample_shift"):
+                args.sample_shift = 5.0
+            if not _cli_provided("--guidance_uncond_mode"):
+                args.guidance_uncond_mode = "decoupled"
+            if args.face_guide_scale is None and not _cli_provided("--face_guide_scale"):
+                args.face_guide_scale = 1.0
+            if args.text_guide_scale is None and not _cli_provided("--text_guide_scale"):
+                args.text_guide_scale = 1.0
+            if not _cli_provided("--refert_num"):
+                args.refert_num = 5
             if args.offload_model is None:
                 args.offload_model = False
             args.log_runtime_stats = True
@@ -125,6 +141,33 @@ def _validate_args(args):
             "--overlap_background_current_strength must be in [0, 1]."
         )
         assert args.seam_debug_max_points >= 0, "--seam_debug_max_points must be >= 0."
+        args.sample_guide_scale = float(args.sample_guide_scale)
+        if args.guidance_uncond_mode == "auto":
+            if args.face_guide_scale is not None or args.text_guide_scale is not None:
+                args.guidance_uncond_mode = "decoupled"
+            else:
+                args.guidance_uncond_mode = "legacy_both"
+        if args.face_guide_scale is None:
+            if args.guidance_uncond_mode == "text_only":
+                args.face_guide_scale = 1.0
+            else:
+                args.face_guide_scale = args.sample_guide_scale
+        if args.text_guide_scale is None:
+            if args.guidance_uncond_mode == "face_only":
+                args.text_guide_scale = 1.0
+            else:
+                args.text_guide_scale = args.sample_guide_scale
+        args.face_guide_scale = float(args.face_guide_scale)
+        args.text_guide_scale = float(args.text_guide_scale)
+        assert args.face_guide_scale >= 1.0, "--face_guide_scale must be >= 1.0."
+        assert args.text_guide_scale >= 1.0, "--text_guide_scale must be >= 1.0."
+        if args.guidance_uncond_mode == "legacy_both":
+            assert abs(args.face_guide_scale - args.text_guide_scale) < 1e-6, (
+                "--guidance_uncond_mode legacy_both requires face/text guide scales to match."
+            )
+            assert abs(args.face_guide_scale - args.sample_guide_scale) < 1e-6, (
+                "--guidance_uncond_mode legacy_both requires --sample_guide_scale to match the resolved face/text scales."
+            )
 
     args.base_seed = args.base_seed if args.base_seed >= 0 else random.randint(
         0, sys.maxsize)
@@ -292,7 +335,26 @@ def _parse_args():
         "--sample_guide_scale",
         type=float,
         default=None,
-        help="Classifier free guidance scale.")
+        help="Legacy animate guidance scale compatibility knob. In decoupled modes it is used only as the default fallback for face/text guide scales.")
+    parser.add_argument(
+        "--face_guide_scale",
+        type=float,
+        default=None,
+        help="Animate-only face expression guidance scale. When omitted, falls back to --sample_guide_scale except in text_only mode."
+    )
+    parser.add_argument(
+        "--text_guide_scale",
+        type=float,
+        default=None,
+        help="Animate-only text guidance scale. When omitted, falls back to --sample_guide_scale except in face_only mode."
+    )
+    parser.add_argument(
+        "--guidance_uncond_mode",
+        type=str,
+        default="auto",
+        choices=["auto", "legacy_both", "face_only", "text_only", "decoupled"],
+        help="Animate-only unconditional branch strategy. 'legacy_both' preserves the old coupled CFG behavior. 'decoupled' runs separate face/text unconditional branches."
+    )
     parser.add_argument(
         "--convert_model_dtype",
         action="store_true",
@@ -636,6 +698,9 @@ def generate(args):
                 overlap_blend_mode=args.overlap_blend_mode,
                 overlap_background_current_strength=args.overlap_background_current_strength,
                 seam_debug_max_points=args.seam_debug_max_points,
+                guidance_uncond_mode=args.guidance_uncond_mode,
+                face_guide_scale=args.face_guide_scale,
+                text_guide_scale=args.text_guide_scale,
                 replacement_mask_mode=args.replacement_mask_mode,
                 replacement_mask_downsample_mode=args.replacement_mask_downsample_mode,
                 replacement_boundary_strength=args.replacement_boundary_strength,
@@ -763,6 +828,9 @@ def generate(args):
                         "avg_clip_sec": runtime_stats.get("avg_clip_sec"),
                         "clip_count": runtime_stats.get("clip_count"),
                         "peak_memory_gb": runtime_stats.get("peak_memory_gb"),
+                        "guidance_forward_passes_per_step": runtime_stats.get("guidance_forward_passes_per_step"),
+                        "face_guide_scale": runtime_stats.get("face_guide_scale"),
+                        "text_guide_scale": runtime_stats.get("text_guide_scale"),
                         "seam_boundary_before_mean": (runtime_stats.get("seam_summary") or {}).get("boundary_before", {}).get("mean"),
                         "seam_boundary_after_mean": (runtime_stats.get("seam_summary") or {}).get("boundary_after", {}).get("mean"),
                         "overlap_mad_before_mean": (runtime_stats.get("seam_summary") or {}).get("overlap_before", {}).get("mean"),
