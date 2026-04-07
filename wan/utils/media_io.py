@@ -3,7 +3,6 @@ import os
 from pathlib import Path
 
 import cv2
-import imageio
 import numpy as np
 
 from .animate_contract import load_image_rgb, read_video_rgb, validate_person_mask_frames, validate_rgb_video
@@ -47,12 +46,33 @@ def _write_gray_png(path: Path, frame_gray: np.ndarray) -> None:
 def write_rgb_video_mp4(frames: np.ndarray, path: str | Path, fps: float) -> None:
     path = Path(path)
     _ensure_parent(path)
-    writer = imageio.get_writer(str(path), fps=fps, codec="libx264", quality=8)
+    try:
+        import imageio
+
+        writer = imageio.get_writer(str(path), fps=fps, codec="libx264", quality=8)
+        try:
+            for frame in frames:
+                writer.append_data(frame)
+        finally:
+            writer.close()
+        return
+    except ModuleNotFoundError:
+        logging.warning("imageio is not available, falling back to cv2.VideoWriter for %s", path)
+
+    height, width = frames.shape[1:3]
+    writer = cv2.VideoWriter(
+        str(path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (width, height),
+    )
+    if not writer.isOpened():
+        raise RuntimeError(f"Failed to open cv2.VideoWriter for {path}")
     try:
         for frame in frames:
-            writer.append_data(frame)
+            writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
     finally:
-        writer.close()
+        writer.release()
 
 
 def write_rgb_png_sequence(frames: np.ndarray, directory: str | Path) -> None:
@@ -265,6 +285,7 @@ def write_output_frames(frames: np.ndarray, save_file: str | Path, fps: float, o
         if save_path.suffix.lower() != ".mkv":
             save_path = save_path.with_suffix(".mkv")
         _ensure_parent(save_path)
+        import imageio
         writer = imageio.get_writer(str(save_path), fps=fps, codec="ffv1")
         try:
             for frame in frames:

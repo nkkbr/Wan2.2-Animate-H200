@@ -39,6 +39,13 @@ from .utils.animate_contract import (
     validate_loaded_preprocess_bundle,
     validate_refert_num,
 )
+from .utils.clip_blending import (
+    blend_clip_overlap,
+    mean_abs_difference,
+    summarize_scalar_series,
+    write_seam_debug_artifacts,
+    write_seam_summary,
+)
 from .utils.media_io import load_mask_artifact, load_person_mask_artifact, load_rgb_artifact, write_person_mask_artifact
 from .utils.replacement_masks import compose_background_keep_mask, derive_replacement_regions, resize_mask_volume
 
@@ -435,12 +442,26 @@ class WanAnimate:
             handle.write("\n")
         return str(stats_path.resolve())
 
+    def _summarize_seams(self, seam_stats):
+        if not seam_stats:
+            return {}
+        return {
+            "boundary_before": summarize_scalar_series([item["boundary_score_before"] for item in seam_stats]),
+            "boundary_after": summarize_scalar_series([item["boundary_score_after"] for item in seam_stats]),
+            "overlap_before": summarize_scalar_series([item["overlap_mad_before"] for item in seam_stats]),
+            "overlap_after_prev": summarize_scalar_series([item["overlap_mad_after_prev"] for item in seam_stats]),
+            "overlap_after_curr": summarize_scalar_series([item["overlap_mad_after_curr"] for item in seam_stats]),
+        }
+
     def generate(
         self,
         src_root_path,
         replace_flag=False,
         clip_len=77,
         refert_num=5,
+        overlap_blend_mode="mask_aware",
+        overlap_background_current_strength=0.35,
+        seam_debug_max_points=6,
         replacement_mask_mode="soft_band",
         replacement_mask_downsample_mode="area",
         replacement_boundary_strength=0.5,
@@ -469,7 +490,13 @@ class WanAnimate:
             clip_len (`int`, *optional*, defaults to 77):
                 How many frames to generate per clips. The number should be 4n+1
             refert_num (`int`, *optional*, defaults to 5):
-                How many frames are reused for temporal guidance. Supported values are 1 and 5.
+                How many frames are reused for temporal guidance. Must satisfy 0 < refert_num < clip_len.
+            overlap_blend_mode (`str`, *optional*, defaults to "mask_aware"):
+                How decoded overlap frames from adjacent clips are merged before final concatenation.
+            overlap_background_current_strength (`float`, *optional*, defaults to 0.35):
+                Current-clip alpha multiplier used in hard background-keep regions during mask-aware blending.
+            seam_debug_max_points (`int`, *optional*, defaults to 6):
+                How many seam comparison bundles are exported under save_debug_dir.
             shift (`float`, *optional*, defaults to 5.0):
                 Noise schedule shift parameter. 
             sample_solver (`str`, *optional*, defaults to 'dpm++'):
@@ -503,7 +530,15 @@ class WanAnimate:
                 - H: Frame height 
                 - W: Frame width 
         """
-        refert_num = validate_refert_num(refert_num)
+        refert_num = validate_refert_num(refert_num, clip_len=clip_len)
+        if overlap_blend_mode not in {"none", "linear", "mask_aware"}:
+            raise ValueError(f"Unsupported overlap_blend_mode: {overlap_blend_mode}")
+        if not 0.0 <= float(overlap_background_current_strength) <= 1.0:
+            raise ValueError(
+                f"overlap_background_current_strength must be in [0, 1]. Got {overlap_background_current_strength}."
+            )
+        if seam_debug_max_points < 0:
+            raise ValueError(f"seam_debug_max_points must be >= 0. Got {seam_debug_max_points}.")
         self.last_runtime_stats = None
 
         seed_g = torch.Generator(device=self.device)
@@ -632,6 +667,9 @@ class WanAnimate:
             "offload_model": bool(offload_model),
             "clip_len": clip_len,
             "refert_num": refert_num,
+            "overlap_blend_mode": overlap_blend_mode,
+            "overlap_background_current_strength": float(overlap_background_current_strength),
+            "seam_debug_max_points": int(seam_debug_max_points),
             "sampling_steps": sampling_steps,
             "guide_scale": float(guide_scale),
             "real_frame_len": int(real_frame_len),
@@ -653,6 +691,7 @@ class WanAnimate:
             "reference_condition_encode_sec": reference_condition_encode_sec,
             "static_condition_encode_sec": static_condition_encode_sec,
             "clip_stats": [],
+            "seam_stats": [],
         }
         if replacement_mask_debug:
             runtime_stats["replacement_mask_debug"] = replacement_mask_debug
@@ -908,13 +947,62 @@ class WanAnimate:
                 clip_sampling_sec = time.perf_counter() - sampling_start_time
                 vae_decode_start_time = time.perf_counter()
                 x0 = [x.to(dtype=torch.float32) for x in x0]
-                out_frames = torch.stack(self.vae.decode([x0[0][:, 1:]]))
+                out_frames = torch.stack(self.vae.decode([x0[0][:, 1:]])).to(dtype=torch.float32).cpu()
                 clip_vae_decode_sec = time.perf_counter() - vae_decode_start_time
-                
+                seam_debug_paths = None
                 if start != 0:
-                    out_frames = out_frames[:, :, refert_num:]
+                    prev_overlap = all_out_frames[-1][:, :, -refert_num:].clone()
+                    curr_overlap = out_frames[:, :, :refert_num].clone()
+                    overlap_pixel_regions = None
+                    if replace_flag and overlap_blend_mode == "mask_aware":
+                        overlap_pixel_regions = {
+                            key: replacement_masks["pixel_regions"][key][start:start + refert_num]
+                            for key in ("hard_background_keep", "transition_band", "free_replacement")
+                        }
+                    blend_result = blend_clip_overlap(
+                        prev_overlap,
+                        curr_overlap,
+                        mode=overlap_blend_mode,
+                        pixel_regions=overlap_pixel_regions,
+                        background_current_strength=overlap_background_current_strength,
+                    )
+                    blended_overlap = blend_result["blended"].cpu()
+                    all_out_frames[-1][:, :, -refert_num:] = blended_overlap
+                    out_frames_tail = out_frames[:, :, refert_num:]
+                    all_out_frames.append(out_frames_tail)
 
-                all_out_frames.append(out_frames.cpu())
+                    next_frame = out_frames[:, :, refert_num:refert_num + 1]
+                    boundary_before = mean_abs_difference(prev_overlap[:, :, -1:], next_frame)
+                    boundary_after = mean_abs_difference(blended_overlap[:, :, -1:], next_frame)
+                    seam_stat = {
+                        "seam_index": len(runtime_stats["seam_stats"]) + 1,
+                        "start_frame": int(start),
+                        "overlap_len": int(refert_num),
+                        "blend_mode": overlap_blend_mode,
+                        "boundary_score_before": boundary_before,
+                        "boundary_score_after": boundary_after,
+                    }
+                    seam_stat.update(blend_result["stats"])
+                    if replace_flag and overlap_pixel_regions is not None:
+                        seam_stat.update({
+                            "background_ratio": float(overlap_pixel_regions["hard_background_keep"].float().mean().item()),
+                            "transition_ratio": float(overlap_pixel_regions["transition_band"].float().mean().item()),
+                            "free_replacement_ratio": float(overlap_pixel_regions["free_replacement"].float().mean().item()),
+                        })
+                    if save_debug_dir is not None and seam_stat["seam_index"] <= seam_debug_max_points:
+                        seam_debug_paths = write_seam_debug_artifacts(
+                            save_debug_dir=save_debug_dir,
+                            seam_index=seam_stat["seam_index"],
+                            fps=preprocess_metadata["fps"] if preprocess_metadata is not None else 30,
+                            prev_overlap=prev_overlap,
+                            curr_overlap=curr_overlap,
+                            blended_overlap=blended_overlap,
+                            alpha_map=blend_result["alpha_map"],
+                        )
+                        seam_stat["debug_paths"] = seam_debug_paths
+                    runtime_stats["seam_stats"].append(seam_stat)
+                else:
+                    all_out_frames.append(out_frames)
 
                 clip_peak_memory_bytes = None
                 if torch.cuda.is_available():
@@ -939,6 +1027,8 @@ class WanAnimate:
                         "background_keep_max": float(clip_background_keep_latent.max().item()),
                         "transition_ratio": float(clip_transition_band_latent.mean().item()),
                     })
+                if seam_debug_paths is not None:
+                    clip_stats["seam_debug_paths"] = seam_debug_paths
                 runtime_stats["clip_stats"].append(clip_stats)
                 if log_runtime_stats:
                     logging.info(
@@ -969,6 +1059,9 @@ class WanAnimate:
             "peak_memory_bytes": peak_memory_bytes,
             "peak_memory_gb": round(peak_memory_bytes / (1024 ** 3), 3) if peak_memory_bytes is not None else None,
         })
+        runtime_stats["seam_summary"] = self._summarize_seams(runtime_stats["seam_stats"])
+        if save_debug_dir is not None and runtime_stats["seam_stats"]:
+            runtime_stats["seam_debug_path"] = write_seam_summary(save_debug_dir, runtime_stats["seam_stats"])
         runtime_stats["stats_path"] = self._write_runtime_stats(save_debug_dir, runtime_stats)
         self.last_runtime_stats = runtime_stats
         if log_runtime_stats:
@@ -979,4 +1072,12 @@ class WanAnimate:
                 static_condition_encode_sec,
                 runtime_stats["peak_memory_gb"] or 0.0,
             )
+            if runtime_stats["seam_summary"]:
+                logging.info(
+                    "Seam summary: boundary_before=%.4f boundary_after=%.4f overlap_before=%.4f overlap_after_prev=%.4f",
+                    runtime_stats["seam_summary"]["boundary_before"]["mean"] or 0.0,
+                    runtime_stats["seam_summary"]["boundary_after"]["mean"] or 0.0,
+                    runtime_stats["seam_summary"]["overlap_before"]["mean"] or 0.0,
+                    runtime_stats["seam_summary"]["overlap_after_prev"]["mean"] or 0.0,
+                )
         return videos[0] if self.rank == 0 else None

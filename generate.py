@@ -101,15 +101,6 @@ def _validate_args(args):
                 args.offload_model = False
             args.log_runtime_stats = True
 
-    if "animate" in args.task:
-        assert args.src_root_path is not None, "Please specify --src_root_path for Wan-Animate."
-        assert Path(args.src_root_path).exists(), f"src_root_path does not exist: {args.src_root_path}"
-        args.refert_num = validate_refert_num(args.refert_num)
-        assert 0.0 <= args.replacement_boundary_strength <= 1.0, "--replacement_boundary_strength must be in [0, 1]."
-        assert 0.0 <= args.replacement_transition_low < args.replacement_transition_high <= 1.0, (
-            "--replacement_transition_low and --replacement_transition_high must satisfy 0 <= low < high <= 1."
-        )
-
     if args.sample_steps is None:
         args.sample_steps = cfg.sample_steps
 
@@ -122,7 +113,18 @@ def _validate_args(args):
     if args.frame_num is None:
         args.frame_num = cfg.frame_num
     if "animate" in args.task:
+        assert args.src_root_path is not None, "Please specify --src_root_path for Wan-Animate."
+        assert Path(args.src_root_path).exists(), f"src_root_path does not exist: {args.src_root_path}"
         assert args.frame_num % 4 == 1, "Wan-Animate requires --frame_num to satisfy 4n+1."
+        args.refert_num = validate_refert_num(args.refert_num, clip_len=args.frame_num)
+        assert 0.0 <= args.replacement_boundary_strength <= 1.0, "--replacement_boundary_strength must be in [0, 1]."
+        assert 0.0 <= args.replacement_transition_low < args.replacement_transition_high <= 1.0, (
+            "--replacement_transition_low and --replacement_transition_high must satisfy 0 <= low < high <= 1."
+        )
+        assert 0.0 <= args.overlap_background_current_strength <= 1.0, (
+            "--overlap_background_current_strength must be in [0, 1]."
+        )
+        assert args.seam_debug_max_points >= 0, "--seam_debug_max_points must be >= 0."
 
     args.base_seed = args.base_seed if args.base_seed >= 0 else random.randint(
         0, sys.maxsize)
@@ -307,7 +309,26 @@ def _parse_args():
         "--refert_num",
         type=int,
         default=DEFAULT_REFERT_NUM,
-        help="How many frames are reused for temporal guidance between adjacent clips. Supported values are 1 and 5; 5 is the recommended default."
+        help="How many frames are reused for temporal guidance between adjacent clips. Must satisfy 0 < refert_num < clip_len. Recommended values to benchmark are 5, 9, and 13."
+    )
+    parser.add_argument(
+        "--overlap_blend_mode",
+        type=str,
+        default="mask_aware",
+        choices=["none", "linear", "mask_aware"],
+        help="How decoded overlap frames from adjacent clips are merged. 'mask_aware' uses replacement masks to keep backgrounds more stable."
+    )
+    parser.add_argument(
+        "--overlap_background_current_strength",
+        type=float,
+        default=0.35,
+        help="Current-clip alpha multiplier used in hard background-keep regions during mask-aware overlap blending."
+    )
+    parser.add_argument(
+        "--seam_debug_max_points",
+        type=int,
+        default=6,
+        help="How many seam debug bundles to export under save_debug_dir. Set to 0 to disable seam media dumps."
     )
     parser.add_argument(
         "--replace_flag",
@@ -612,6 +633,9 @@ def generate(args):
                 src_root_path=args.src_root_path,
                 replace_flag=args.replace_flag,
                 refert_num=args.refert_num,
+                overlap_blend_mode=args.overlap_blend_mode,
+                overlap_background_current_strength=args.overlap_background_current_strength,
+                seam_debug_max_points=args.seam_debug_max_points,
                 replacement_mask_mode=args.replacement_mask_mode,
                 replacement_mask_downsample_mode=args.replacement_mask_downsample_mode,
                 replacement_boundary_strength=args.replacement_boundary_strength,
@@ -739,6 +763,10 @@ def generate(args):
                         "avg_clip_sec": runtime_stats.get("avg_clip_sec"),
                         "clip_count": runtime_stats.get("clip_count"),
                         "peak_memory_gb": runtime_stats.get("peak_memory_gb"),
+                        "seam_boundary_before_mean": (runtime_stats.get("seam_summary") or {}).get("boundary_before", {}).get("mean"),
+                        "seam_boundary_after_mean": (runtime_stats.get("seam_summary") or {}).get("boundary_after", {}).get("mean"),
+                        "overlap_mad_before_mean": (runtime_stats.get("seam_summary") or {}).get("overlap_before", {}).get("mean"),
+                        "overlap_mad_after_prev_mean": (runtime_stats.get("seam_summary") or {}).get("overlap_after_prev", {}).get("mean"),
                     }
                 finalize_stage_manifest(
                     run_layout,

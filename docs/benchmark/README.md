@@ -97,6 +97,10 @@ clean plate 背景构建检查脚本见：
 
 - `scripts/eval/check_clean_plate_background.py`
 
+clip overlap blending / seam debug 检查脚本见：
+
+- `scripts/eval/check_clip_blending.py`
+
 ## 7. 后续建议
 
 后续应把外部 benchmark 素材逐步补充到统一 manifest 中，并且每个新增素材都附带：

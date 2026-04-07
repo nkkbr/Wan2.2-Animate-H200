@@ -12,14 +12,18 @@ PREPROCESS_COLOR_SPACE = "rgb"
 PERSON_MASK_SEMANTICS = "person_foreground"
 BACKGROUND_KEEP_MASK_SEMANTICS = "1 - person_foreground"
 SOFT_BAND_SEMANTICS = "boundary_transition_band"
-ALLOWED_REFERT_NUMS = (1, 5)
 DEFAULT_REFERT_NUM = 5
 
 
-def validate_refert_num(refert_num: int) -> int:
-    if refert_num not in ALLOWED_REFERT_NUMS:
-        allowed = ", ".join(str(value) for value in ALLOWED_REFERT_NUMS)
-        raise ValueError(f"refert_num must be one of: {allowed}. Got {refert_num}.")
+def validate_refert_num(refert_num: int, clip_len: int | None = None) -> int:
+    if not isinstance(refert_num, int):
+        raise TypeError(f"refert_num must be an integer. Got {type(refert_num)!r}.")
+    if refert_num <= 0:
+        raise ValueError(f"refert_num must be > 0. Got {refert_num}.")
+    if clip_len is not None and refert_num >= clip_len:
+        raise ValueError(
+            f"refert_num must satisfy 0 < refert_num < clip_len. Got refert_num={refert_num}, clip_len={clip_len}."
+        )
     return refert_num
 
 
