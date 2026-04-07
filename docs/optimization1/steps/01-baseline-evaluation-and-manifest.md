@@ -184,7 +184,7 @@ runs/
 
 这一步建议新增或修改的范围：
 
-- `docs/benchmark/` 或类似目录
+- `docs/optimization1/benchmark/` 或类似目录
   保存 benchmark 规范
 - `scripts/eval/`
   保存简单统计脚本

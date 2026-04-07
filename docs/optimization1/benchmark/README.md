@@ -37,7 +37,7 @@
 
 系统级验证方案见：
 
-- `docs/benchmark/animate_replacement_system_validation.md`
+- `docs/optimization1/benchmark/animate_replacement_system_validation.md`
 
 
 ## 4. benchmark manifest
@@ -45,7 +45,7 @@
 建议 benchmark case 使用统一 manifest 描述。  
 示例见：
 
-- `docs/benchmark/benchmark_manifest.example.json`
+- `docs/optimization1/benchmark/benchmark_manifest.example.json`
 
 推荐字段包括：
 
@@ -62,7 +62,7 @@
 
 人工评分模板见：
 
-- `docs/benchmark/manual_score_template.csv`
+- `docs/optimization1/benchmark/manual_score_template.csv`
 
 建议至少记录：
 
@@ -79,7 +79,7 @@
 replacement 的 preprocess 输出目录现在包含正式的 `metadata.json`。
 字段说明见：
 
-- `docs/benchmark/animate_preprocess_metadata.md`
+- `docs/optimization1/benchmark/animate_preprocess_metadata.md`
 
 lossless roundtrip 检查脚本见：
 

@@ -4,8 +4,8 @@
 
 本目录把两份上层方案文档：
 
-- `docs/wan_animate_replacement_preprocess_optimization.md`
-- `docs/wan_animate_replacement_generate_optimization.md`
+- `docs/optimization1/wan_animate_replacement_preprocess_optimization.md`
+- `docs/optimization1/wan_animate_replacement_generate_optimization.md`
 
 收敛成一条可执行的、分步骤的工程实施路线。
 
