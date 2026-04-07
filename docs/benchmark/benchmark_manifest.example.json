@@ -1,0 +1,30 @@
+{
+  "benchmark_name": "wan_animate_replacement_v1",
+  "version": "1.0",
+  "cases": [
+    {
+      "case_id": "repo_replace_demo_001",
+      "status": "active",
+      "driver_video": "examples/wan_animate/replace/video.mp4",
+      "reference_image": "examples/wan_animate/replace/image.jpeg",
+      "tags": [
+        "repo_demo",
+        "single_person",
+        "replacement"
+      ],
+      "expected_challenges": [
+        "baseline_demo_case"
+      ],
+      "notes": "Bundled repository demo case. Use as a smoke-test benchmark only, not as the sole quality benchmark."
+    }
+  ],
+  "required_coverage": [
+    "frontal_slow_motion",
+    "fast_limbs",
+    "hair_and_garments",
+    "heavy_occlusion",
+    "camera_motion",
+    "strong_lighting_change",
+    "complex_background"
+  ]
+}
