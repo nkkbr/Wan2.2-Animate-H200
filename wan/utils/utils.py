@@ -7,9 +7,10 @@ import os.path as osp
 import shutil
 import subprocess
 
-import imageio
 import torch
 import torchvision
+
+from .media_io import describe_output_path, infer_output_format, write_output_frames
 
 __all__ = ['save_video', 'save_image', 'str2bool']
 
@@ -87,35 +88,40 @@ def merge_video_audio(video_path: str, audio_path: str):
         logging.error(f"merge_video_audio failed with error: {e}")
 
 
+def tensor_to_video_frames(tensor, nrow=8, normalize=True, value_range=(-1, 1)):
+    tensor = tensor.clamp(min(value_range), max(value_range))
+    tensor = torch.stack([
+        torchvision.utils.make_grid(
+            u, nrow=nrow, normalize=normalize, value_range=value_range)
+        for u in tensor.unbind(2)
+    ],
+                         dim=1).permute(1, 2, 3, 0)
+    return (tensor * 255).type(torch.uint8).cpu().numpy()
+
+
 def save_video(tensor,
                save_file=None,
                fps=30,
                suffix='.mp4',
                nrow=8,
                normalize=True,
-               value_range=(-1, 1)):
+               value_range=(-1, 1),
+               output_format='auto'):
     # cache file
     cache_file = osp.join('/tmp', rand_name(
         suffix=suffix)) if save_file is None else save_file
 
     # save to cache
     try:
-        # preprocess
-        tensor = tensor.clamp(min(value_range), max(value_range))
-        tensor = torch.stack([
-            torchvision.utils.make_grid(
-                u, nrow=nrow, normalize=normalize, value_range=value_range)
-            for u in tensor.unbind(2)
-        ],
-                             dim=1).permute(1, 2, 3, 0)
-        tensor = (tensor * 255).type(torch.uint8).cpu()
-
-        # write video
-        writer = imageio.get_writer(
-            cache_file, fps=fps, codec='libx264', quality=8)
-        for frame in tensor.numpy():
-            writer.append_data(frame)
-        writer.close()
+        frames = tensor_to_video_frames(
+            tensor,
+            nrow=nrow,
+            normalize=normalize,
+            value_range=value_range,
+        )
+        resolved_output_format = infer_output_format(cache_file, output_format)
+        cache_file = describe_output_path(cache_file, resolved_output_format)
+        return write_output_frames(frames, cache_file, fps=fps, output_format=resolved_output_format)
     except Exception as e:
         logging.info(f'save_video failed, error: {e}')
 

@@ -17,6 +17,7 @@ from wan.utils.animate_contract import (
     resolve_preprocess_artifacts,
     validate_loaded_preprocess_bundle,
 )
+from wan.utils.media_io import load_person_mask_artifact, load_rgb_artifact
 
 
 def padding_resize(img_ori, height=512, width=512, padding_color=(0, 0, 0), interpolation=cv2.INTER_LINEAR):
@@ -130,9 +131,9 @@ def run_synthetic_color_contract() -> None:
 
 def validate_preprocess_directory(src_root_path: str, replace_flag: bool) -> None:
     artifacts, metadata = resolve_preprocess_artifacts(src_root_path, replace_flag=replace_flag)
-    cond_images, pose_reader = read_video_rgb_for_test(artifacts["pose"])
-    face_images, face_reader = read_video_rgb_for_test(artifacts["face"])
-    refer_image_rgb = load_image_rgb(artifacts["reference"])
+    cond_images = load_rgb_artifact(artifacts["pose"]["path"], artifacts["pose"].get("format"))
+    face_images = load_rgb_artifact(artifacts["face"]["path"], artifacts["face"].get("format"))
+    refer_image_rgb = load_image_rgb(artifacts["reference"]["path"])
     refer_image_rgb = padding_resize(refer_image_rgb, height=cond_images.shape[1], width=cond_images.shape[2])
 
     kwargs = {
@@ -142,16 +143,27 @@ def validate_preprocess_directory(src_root_path: str, replace_flag: bool) -> Non
         "metadata": metadata,
     }
     if replace_flag:
-        bg_images, bg_reader = read_video_rgb_for_test(artifacts["background"])
-        person_mask_rgb, mask_reader = read_video_rgb_for_test(artifacts["person_mask"])
-        person_mask_images = person_mask_rgb[:, :, :, 0].astype(np.float32) / 255.0
+        bg_images = load_rgb_artifact(artifacts["background"]["path"], artifacts["background"].get("format"))
+        person_mask_images = load_person_mask_artifact(
+            artifacts["person_mask"]["path"],
+            artifacts["person_mask"].get("format"),
+        )
         kwargs["bg_images"] = bg_images
         kwargs["person_mask_images"] = person_mask_images
 
     validate_loaded_preprocess_bundle(**kwargs)
-    print(f"Directory contract readers: pose={pose_reader}, face={face_reader}")
+    print(
+        "Directory contract formats: "
+        f"pose={artifacts['pose'].get('format')}, "
+        f"face={artifacts['face'].get('format')}, "
+        f"reference={artifacts['reference'].get('format')}"
+    )
     if replace_flag:
-        print(f"Directory contract readers: background={bg_reader}, person_mask={mask_reader}")
+        print(
+            "Directory contract formats: "
+            f"background={artifacts['background'].get('format')}, "
+            f"person_mask={artifacts['person_mask'].get('format')}"
+        )
 
 
 def main():

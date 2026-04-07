@@ -26,6 +26,7 @@ from wan.utils.experiment import (
     start_stage_manifest,
 )
 from wan.utils.animate_contract import DEFAULT_REFERT_NUM, validate_refert_num
+from wan.utils.media_io import OUTPUT_VIDEO_FORMATS, describe_output_path, infer_output_format
 from wan.utils.utils import merge_video_audio, save_video, str2bool
 
 
@@ -176,6 +177,13 @@ def _parse_args():
         type=str,
         default=None,
         help="The file to save the generated video to.")
+    parser.add_argument(
+        "--output_format",
+        type=str,
+        default="auto",
+        choices=list(OUTPUT_VIDEO_FORMATS),
+        help="Final output format. 'auto' infers from --save_file. Supported values: mp4, png_seq, ffv1."
+    )
     parser.add_argument(
         "--run_name",
         type=str,
@@ -610,11 +618,17 @@ def generate(args):
                 offload_model=args.offload_model)
 
         if rank == 0:
+            resolved_output_format = infer_output_format(args.save_file, args.output_format)
             if args.save_file is None:
                 formatted_time = datetime.now().strftime("%Y%m%d_%H%M%S")
                 formatted_prompt = args.prompt.replace(" ", "_").replace("/",
                                                                          "_")[:50]
-                suffix = '.mp4'
+                if resolved_output_format == "png_seq":
+                    suffix = ""
+                elif resolved_output_format == "ffv1":
+                    suffix = ".mkv"
+                else:
+                    suffix = ".mp4"
                 file_name = f"{args.task}_{args.size.replace('*','x') if sys.platform=='win32' else args.size}_{args.ulysses_size}_{formatted_prompt}_{formatted_time}" + suffix
                 if run_layout is not None:
                     args.save_file = str((run_layout["outputs_dir"] / file_name).resolve())
@@ -622,20 +636,28 @@ def generate(args):
                     args.save_file = file_name
             else:
                 args.save_file = str(Path(args.save_file).resolve())
+            resolved_output_format = infer_output_format(args.save_file, args.output_format)
+            args.save_file = describe_output_path(args.save_file, resolved_output_format)
 
             logging.info(f"Saving generated video to {args.save_file}")
-            save_video(
+            saved_path = save_video(
                 tensor=video[None],
                 save_file=args.save_file,
                 fps=cfg.sample_fps,
                 nrow=1,
                 normalize=True,
-                value_range=(-1, 1))
+                value_range=(-1, 1),
+                output_format=resolved_output_format)
+            if saved_path is not None:
+                args.save_file = str(Path(saved_path).resolve())
             if "s2v" in args.task:
-                if args.enable_tts is False:
-                    merge_video_audio(video_path=args.save_file, audio_path=args.audio)
+                if resolved_output_format == "mp4":
+                    if args.enable_tts is False:
+                        merge_video_audio(video_path=args.save_file, audio_path=args.audio)
+                    else:
+                        merge_video_audio(video_path=args.save_file, audio_path="tts.wav")
                 else:
-                    merge_video_audio(video_path=args.save_file, audio_path="tts.wav")
+                    logging.warning("Skipping audio merge because output_format=%s does not support in-place muxing.", resolved_output_format)
 
             if manifest_token is not None:
                 finalize_stage_manifest(
@@ -644,6 +666,7 @@ def generate(args):
                     status="completed",
                     outputs={
                         "save_file": args.save_file,
+                        "output_format": resolved_output_format,
                         "save_debug_dir": args.save_debug_dir,
                     },
                 )
@@ -655,6 +678,7 @@ def generate(args):
                 status="failed",
                 outputs={
                     "save_file": args.save_file,
+                    "output_format": args.output_format,
                     "save_debug_dir": args.save_debug_dir,
                 },
                 error=str(exc),

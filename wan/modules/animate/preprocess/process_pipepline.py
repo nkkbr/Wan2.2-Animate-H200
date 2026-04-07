@@ -7,10 +7,6 @@ from diffusers import FluxKontextPipeline
 import cv2
 from loguru import logger
 from PIL import Image
-try:
-    import moviepy.editor as mpy
-except:
-    import moviepy as mpy
 
 from decord import VideoReader
 from pose2d import Pose2d
@@ -24,6 +20,7 @@ transformer.MATH_KERNEL_ON = True
 transformer.OLD_GPU = True
 from sam_utils import build_sam2_video_predictor
 from wan.utils.animate_contract import load_image_rgb, validate_rgb_video
+from wan.utils.media_io import write_person_mask_artifact, write_rgb_artifact
 
 
 class ProcessPipeline():
@@ -36,7 +33,16 @@ class ProcessPipeline():
         if flux_kontext_path is not None:
             self.flux_kontext = FluxKontextPipeline.from_pretrained(flux_kontext_path, torch_dtype=torch.bfloat16).to("cuda")
 
-    def __call__(self, video_path, refer_image_path, output_path, resolution_area=[1280, 720], fps=30, iterations=3, k=7, w_len=1, h_len=1, retarget_flag=False, use_flux=False, replace_flag=False):
+    def _artifact_format(self, save_format, lossless_intermediate, stem, is_mask=False):
+        if not lossless_intermediate:
+            return save_format
+        if is_mask:
+            return "npz"
+        if stem == "reference":
+            return "png"
+        return "png_seq"
+
+    def __call__(self, video_path, refer_image_path, output_path, resolution_area=[1280, 720], fps=30, save_format="mp4", lossless_intermediate=False, iterations=3, k=7, w_len=1, h_len=1, retarget_flag=False, use_flux=False, replace_flag=False):
         if replace_flag:
 
             video_reader = VideoReader(video_path)
@@ -112,18 +118,54 @@ class ProcessPipeline():
                 bg_images.append(each_bg_image)
                 aug_masks.append(each_aug_mask)
 
-            src_face_path = os.path.join(output_path, 'src_face.mp4')
-            mpy.ImageSequenceClip(face_images, fps=fps).write_videofile(src_face_path)
+            face_images = np.stack(face_images).astype(np.uint8)
+            cond_images = np.stack(cond_images).astype(np.uint8)
+            bg_images = np.stack(bg_images).astype(np.uint8)
+            aug_masks = np.stack(aug_masks).astype(np.float32)
 
-            src_pose_path = os.path.join(output_path, 'src_pose.mp4')
-            mpy.ImageSequenceClip(cond_images, fps=fps).write_videofile(src_pose_path)
-
-            src_bg_path = os.path.join(output_path, 'src_bg.mp4')
-            mpy.ImageSequenceClip(bg_images, fps=fps).write_videofile(src_bg_path)
-
-            aug_masks_new = [np.stack([mask * 255, mask * 255, mask * 255], axis=2) for mask in aug_masks]
-            src_mask_path = os.path.join(output_path, 'src_mask.mp4')
-            mpy.ImageSequenceClip(aug_masks_new, fps=fps).write_videofile(src_mask_path)
+            src_files = {
+                "pose": write_rgb_artifact(
+                    frames=cond_images,
+                    output_root=output_path,
+                    stem="src_pose",
+                    artifact_format=self._artifact_format(save_format, lossless_intermediate, "pose"),
+                    fps=fps,
+                ),
+                "face": write_rgb_artifact(
+                    frames=face_images,
+                    output_root=output_path,
+                    stem="src_face",
+                    artifact_format=self._artifact_format(save_format, lossless_intermediate, "face"),
+                    fps=fps,
+                ),
+                "background": write_rgb_artifact(
+                    frames=bg_images,
+                    output_root=output_path,
+                    stem="src_bg",
+                    artifact_format=self._artifact_format(save_format, lossless_intermediate, "background"),
+                    fps=fps,
+                ),
+                "person_mask": write_person_mask_artifact(
+                    mask_frames=aug_masks,
+                    output_root=output_path,
+                    stem="src_mask",
+                    artifact_format=self._artifact_format(save_format, lossless_intermediate, "person_mask", is_mask=True),
+                    fps=fps,
+                ),
+                "reference": {
+                    "path": "src_ref.png",
+                    "type": "image",
+                    "format": "png",
+                    "height": int(reference_height),
+                    "width": int(reference_width),
+                    "channels": 3,
+                    "color_space": "rgb",
+                    "dtype": "uint8",
+                    "shape": [int(reference_height), int(reference_width), 3],
+                    "resized_height": int(height),
+                    "resized_width": int(width),
+                },
+            }
             return {
                 "frame_count": len(frames),
                 "fps": float(fps),
@@ -132,6 +174,7 @@ class ProcessPipeline():
                 "channels": 3,
                 "reference_height": int(reference_height),
                 "reference_width": int(reference_width),
+                "src_files": src_files,
             }
         else:
             logger.info(f"Processing reference image: {refer_image_path}")
@@ -238,11 +281,37 @@ class ProcessPipeline():
 
                 cond_images.append(conditioning_image)
 
-            src_face_path = os.path.join(output_path, 'src_face.mp4')
-            mpy.ImageSequenceClip(face_images, fps=fps).write_videofile(src_face_path)
-
-            src_pose_path = os.path.join(output_path, 'src_pose.mp4')
-            mpy.ImageSequenceClip(cond_images, fps=fps).write_videofile(src_pose_path)
+            face_images = np.stack(face_images).astype(np.uint8)
+            cond_images = np.stack(cond_images).astype(np.uint8)
+            src_files = {
+                "pose": write_rgb_artifact(
+                    frames=cond_images,
+                    output_root=output_path,
+                    stem="src_pose",
+                    artifact_format=self._artifact_format(save_format, lossless_intermediate, "pose"),
+                    fps=fps,
+                ),
+                "face": write_rgb_artifact(
+                    frames=face_images,
+                    output_root=output_path,
+                    stem="src_face",
+                    artifact_format=self._artifact_format(save_format, lossless_intermediate, "face"),
+                    fps=fps,
+                ),
+                "reference": {
+                    "path": "src_ref.png",
+                    "type": "image",
+                    "format": "png",
+                    "height": int(reference_height),
+                    "width": int(reference_width),
+                    "channels": 3,
+                    "color_space": "rgb",
+                    "dtype": "uint8",
+                    "shape": [int(reference_height), int(reference_width), 3],
+                    "resized_height": int(cond_images[0].shape[0]),
+                    "resized_width": int(cond_images[0].shape[1]),
+                },
+            }
             return {
                 "frame_count": len(frames),
                 "fps": float(fps),
@@ -251,6 +320,7 @@ class ProcessPipeline():
                 "channels": 3,
                 "reference_height": int(reference_height),
                 "reference_width": int(reference_width),
+                "src_files": src_files,
             }
 
     def get_editing_prompts(self, tpl_pose_metas, refer_pose_meta):

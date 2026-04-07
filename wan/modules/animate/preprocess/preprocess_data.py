@@ -16,6 +16,7 @@ from wan.utils.experiment import (
     start_stage_manifest,
 )
 from wan.utils.animate_contract import build_preprocess_metadata, write_preprocess_metadata
+from wan.utils.media_io import INTERMEDIATE_SAVE_FORMATS
 
 
 def _parse_args():
@@ -75,6 +76,19 @@ def _parse_args():
         type=int,
         default=30,
         help="The target FPS for processing the driving video. Set to -1 to use the video's original FPS."
+    )
+    parser.add_argument(
+        "--save_format",
+        type=str,
+        default="mp4",
+        choices=list(INTERMEDIATE_SAVE_FORMATS),
+        help="Intermediate artifact format. 'mp4' keeps legacy behavior. 'png_seq' and 'npz' enable higher-fidelity roundtrips."
+    )
+    parser.add_argument(
+        "--lossless_intermediate",
+        action="store_true",
+        default=False,
+        help="Enable the recommended high-fidelity intermediate layout: RGB control signals are saved as png sequences and person_mask is saved as npz."
     )
 
     parser.add_argument(
@@ -172,6 +186,8 @@ if __name__ == '__main__':
                                             output_path=args.save_path,
                                             resolution_area=args.resolution_area,
                                             fps=args.fps,
+                                            save_format=args.save_format,
+                                            lossless_intermediate=args.lossless_intermediate,
                                             iterations=args.iterations,
                                             k=args.k,
                                             w_len=args.w_len,
@@ -198,6 +214,9 @@ if __name__ == '__main__':
             h_len=args.h_len,
             reference_height=pipeline_outputs["reference_height"],
             reference_width=pipeline_outputs["reference_width"],
+            src_files=pipeline_outputs["src_files"],
+            intermediate_save_format=args.save_format,
+            lossless_intermediate=args.lossless_intermediate,
         )
         metadata_path = write_preprocess_metadata(args.save_path, metadata)
         if manifest_token is not None:
@@ -207,10 +226,13 @@ if __name__ == '__main__':
                 "generated_files": sorted(str(path.resolve()) for path in output_dir.iterdir()),
                 "metadata_path": str(metadata_path.resolve()),
             }
-            for name in ["src_pose.mp4", "src_face.mp4", "src_bg.mp4", "src_mask.mp4", "src_ref.png", "metadata.json"]:
-                path = output_dir / name
+            for artifact_name, artifact in pipeline_outputs["src_files"].items():
+                path = output_dir / artifact["path"]
                 if path.exists():
-                    stage_outputs[path.stem] = str(path)
+                    stage_outputs[artifact_name] = str(path.resolve())
+            metadata_file = output_dir / "metadata.json"
+            if metadata_file.exists():
+                stage_outputs["metadata"] = str(metadata_file.resolve())
             finalize_stage_manifest(
                 run_layout,
                 manifest_token,

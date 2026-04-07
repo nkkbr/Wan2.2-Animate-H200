@@ -89,61 +89,84 @@ def build_preprocess_metadata(
     h_len: int,
     reference_height: int,
     reference_width: int,
+    src_files: dict | None = None,
+    intermediate_save_format: str = "mp4",
+    lossless_intermediate: bool = False,
 ) -> dict:
-    src_files = {
-        "pose": {
-            "path": "src_pose.mp4",
-            "type": "video",
-            "frame_count": frame_count,
-            "height": height,
-            "width": width,
-            "channels": 3,
-            "color_space": PREPROCESS_COLOR_SPACE,
-        },
-        "face": {
-            "path": "src_face.mp4",
-            "type": "video",
-            "frame_count": frame_count,
-            "height": 512,
-            "width": 512,
-            "channels": 3,
-            "color_space": PREPROCESS_COLOR_SPACE,
-        },
-        "reference": {
-            "path": "src_ref.png",
-            "type": "image",
-            "height": reference_height,
-            "width": reference_width,
-            "channels": 3,
-            "color_space": PREPROCESS_COLOR_SPACE,
-            "resized_height": height,
-            "resized_width": width,
-        },
-    }
+    if src_files is None:
+        src_files = {
+            "pose": {
+                "path": "src_pose.mp4",
+                "type": "video",
+                "format": "mp4",
+                "frame_count": frame_count,
+                "height": height,
+                "width": width,
+                "channels": 3,
+                "color_space": PREPROCESS_COLOR_SPACE,
+                "dtype": "uint8",
+                "shape": [frame_count, height, width, 3],
+                "fps": float(fps_output),
+            },
+            "face": {
+                "path": "src_face.mp4",
+                "type": "video",
+                "format": "mp4",
+                "frame_count": frame_count,
+                "height": 512,
+                "width": 512,
+                "channels": 3,
+                "color_space": PREPROCESS_COLOR_SPACE,
+                "dtype": "uint8",
+                "shape": [frame_count, 512, 512, 3],
+                "fps": float(fps_output),
+            },
+            "reference": {
+                "path": "src_ref.png",
+                "type": "image",
+                "format": "png",
+                "height": reference_height,
+                "width": reference_width,
+                "channels": 3,
+                "color_space": PREPROCESS_COLOR_SPACE,
+                "dtype": "uint8",
+                "shape": [reference_height, reference_width, 3],
+                "resized_height": height,
+                "resized_width": width,
+            },
+        }
 
-    if replace_flag:
-        src_files["background"] = {
-            "path": "src_bg.mp4",
-            "type": "video",
-            "frame_count": frame_count,
-            "height": height,
-            "width": width,
-            "channels": 3,
-            "color_space": PREPROCESS_COLOR_SPACE,
-        }
-        src_files["person_mask"] = {
-            "path": "src_mask.mp4",
-            "type": "video",
-            "frame_count": frame_count,
-            "height": height,
-            "width": width,
-            "channels": 1,
-            "stored_channels": 3,
-            "color_space": PREPROCESS_COLOR_SPACE,
-            "value_range": [0.0, 1.0],
-            "stored_value_range": [0, 255],
-            "mask_semantics": PERSON_MASK_SEMANTICS,
-        }
+        if replace_flag:
+            src_files["background"] = {
+                "path": "src_bg.mp4",
+                "type": "video",
+                "format": "mp4",
+                "frame_count": frame_count,
+                "height": height,
+                "width": width,
+                "channels": 3,
+                "color_space": PREPROCESS_COLOR_SPACE,
+                "dtype": "uint8",
+                "shape": [frame_count, height, width, 3],
+                "fps": float(fps_output),
+            }
+            src_files["person_mask"] = {
+                "path": "src_mask.mp4",
+                "type": "video",
+                "format": "mp4",
+                "frame_count": frame_count,
+                "height": height,
+                "width": width,
+                "channels": 1,
+                "stored_channels": 3,
+                "color_space": PREPROCESS_COLOR_SPACE,
+                "dtype": "float32",
+                "shape": [frame_count, height, width],
+                "fps": float(fps_output),
+                "value_range": [0.0, 1.0],
+                "stored_value_range": [0, 255],
+                "mask_semantics": PERSON_MASK_SEMANTICS,
+            }
 
     return {
         "version": PREPROCESS_METADATA_VERSION,
@@ -166,6 +189,8 @@ def build_preprocess_metadata(
         "processing": {
             "resolution_area": list(resolution_area),
             "fps_request": fps_request,
+            "save_format": intermediate_save_format,
+            "lossless_intermediate": bool(lossless_intermediate),
             "mask_strategy": {
                 "iterations": iterations,
                 "k": k,
@@ -264,17 +289,21 @@ def resolve_preprocess_artifacts(
     root = Path(src_root_path)
     if metadata is None:
         artifacts = {
-            "pose": root / "src_pose.mp4",
-            "face": root / "src_face.mp4",
-            "reference": root / "src_ref.png",
+            "pose": {"path": root / "src_pose.mp4", "format": "mp4"},
+            "face": {"path": root / "src_face.mp4", "format": "mp4"},
+            "reference": {"path": root / "src_ref.png", "format": "png"},
         }
         if replace_flag:
-            artifacts["background"] = root / "src_bg.mp4"
-            artifacts["person_mask"] = root / "src_mask.mp4"
-        for name, path in artifacts.items():
+            artifacts["background"] = {"path": root / "src_bg.mp4", "format": "mp4"}
+            artifacts["person_mask"] = {"path": root / "src_mask.mp4", "format": "mp4"}
+        for name, artifact in artifacts.items():
+            path = Path(artifact["path"])
             if not path.exists():
                 raise FileNotFoundError(f"Missing required preprocess artifact: {path} ({name})")
-        return {key: str(path) for key, path in artifacts.items()}, None
+        return {
+            key: {"path": str(Path(artifact["path"]).resolve()), "format": artifact["format"]}
+            for key, artifact in artifacts.items()
+        }, None
 
     if replace_flag and not metadata["replace_flag"]:
         raise ValueError(
@@ -282,7 +311,10 @@ def resolve_preprocess_artifacts(
         )
 
     artifacts = {
-        name: str((root / artifact["path"]).resolve())
+        name: {
+            "path": str((root / artifact["path"]).resolve()),
+            "format": artifact.get("format"),
+        }
         for name, artifact in metadata["src_files"].items()
         if name in {"pose", "face", "reference", "background", "person_mask"}
     }

@@ -77,6 +77,10 @@ replacement 的 preprocess 输出目录现在包含正式的 `metadata.json`。
 
 - `docs/benchmark/animate_preprocess_metadata.md`
 
+lossless roundtrip 检查脚本见：
+
+- `scripts/eval/check_lossless_roundtrip.py`
+
 ## 7. 后续建议
 
 后续应把外部 benchmark 素材逐步补充到统一 manifest 中，并且每个新增素材都附带：

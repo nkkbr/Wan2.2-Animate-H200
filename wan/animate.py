@@ -33,11 +33,11 @@ from .utils.animate_contract import (
     BACKGROUND_KEEP_MASK_SEMANTICS,
     PERSON_MASK_SEMANTICS,
     load_image_rgb,
-    read_video_rgb,
     resolve_preprocess_artifacts,
     validate_loaded_preprocess_bundle,
     validate_refert_num,
 )
+from .utils.media_io import load_person_mask_artifact, load_rgb_artifact
 
 
 
@@ -274,18 +274,17 @@ class WanAnimate:
 
         return img_pad
 
-    def prepare_source(self, src_pose_path, src_face_path, src_ref_path):
-        cond_images = read_video_rgb(src_pose_path)
-        face_images = read_video_rgb(src_face_path)
+    def prepare_source(self, src_pose_artifact, src_face_artifact, src_ref_artifact):
+        cond_images = load_rgb_artifact(src_pose_artifact["path"], src_pose_artifact.get("format"))
+        face_images = load_rgb_artifact(src_face_artifact["path"], src_face_artifact.get("format"))
         height, width = cond_images[0].shape[:2]
-        refer_images = load_image_rgb(src_ref_path)
+        refer_images = load_image_rgb(src_ref_artifact["path"])
         refer_images = self.padding_resize(refer_images, height=height, width=width)
         return cond_images, face_images, refer_images
     
-    def prepare_source_for_replace(self, src_bg_path, src_mask_path):
-        bg_images = read_video_rgb(src_bg_path)
-        person_mask_rgb = read_video_rgb(src_mask_path)
-        person_mask_images = person_mask_rgb[:, :, :, 0].astype(np.float32) / 255.0
+    def prepare_source_for_replace(self, src_bg_artifact, src_mask_artifact):
+        bg_images = load_rgb_artifact(src_bg_artifact["path"], src_bg_artifact.get("format"))
+        person_mask_images = load_person_mask_artifact(src_mask_artifact["path"], src_mask_artifact.get("format"))
         return bg_images, person_mask_images
 
     def generate(
@@ -373,9 +372,9 @@ class WanAnimate:
                 )
 
         cond_images, face_images, refer_images = self.prepare_source(
-            src_pose_path=artifacts["pose"],
-            src_face_path=artifacts["face"],
-            src_ref_path=artifacts["reference"],
+            src_pose_artifact=artifacts["pose"],
+            src_face_artifact=artifacts["face"],
+            src_ref_artifact=artifacts["reference"],
         )
         
         if not self.t5_cpu:
@@ -398,8 +397,8 @@ class WanAnimate:
         
         if replace_flag:
             bg_images, person_mask_images = self.prepare_source_for_replace(
-                artifacts["background"],
-                artifacts["person_mask"],
+                src_bg_artifact=artifacts["background"],
+                src_mask_artifact=artifacts["person_mask"],
             )
             validate_loaded_preprocess_bundle(
                 cond_images=np.asarray(cond_images[:real_frame_len]),
