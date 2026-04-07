@@ -30,8 +30,9 @@
 - `processing.control_stabilization`: face / pose 稳定化参数快照
 - `processing.sam2_mask_generation`: replacement 模式下 SAM2 chunk / prompt / negative-point 参数快照
 - `processing.soft_mask`: soft mask / boundary band 参数快照
+- `processing.background`: replacement 模式下背景构建参数快照
 - `qa_outputs`: 可选的 QA overlay 与曲线产物
-  - 例如 `face_bbox_overlay`、`pose_overlay`、`mask_overlay`、`soft_band_overlay`、`sam_prompts_overlay`、`mask_stats`
+  - 例如 `face_bbox_overlay`、`pose_overlay`、`mask_overlay`、`soft_band_overlay`、`background_hole`、`background_clean_plate`、`background_diff`
 
 ## `src_files`
 
@@ -79,6 +80,7 @@
   - `type`: `video`
   - `format`: `mp4`、`png_seq` 或 `npz`
   - `frame_count/height/width/channels/color_space/dtype/shape/fps`
+  - `background_mode`: `hole` 或 `clean_plate_image`（后续可扩展 `clean_plate_video`）
 - `person_mask`
   - `path`: 例如 `src_mask.mp4`、`src_mask/` 或 `src_mask.npz`
   - `type`: `video`

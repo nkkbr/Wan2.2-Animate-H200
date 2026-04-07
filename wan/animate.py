@@ -528,10 +528,15 @@ class WanAnimate:
                 preprocess_metadata["replace_flag"],
             )
             if replace_flag:
+                background_mode = preprocess_metadata.get("processing", {}).get("background", {}).get(
+                    "bg_inpaint_mode",
+                    preprocess_metadata.get("src_files", {}).get("background", {}).get("background_mode", "unknown"),
+                )
                 logging.info(
-                    "Mask contract: src_mask=%s, generate uses %s.",
+                    "Mask contract: src_mask=%s, generate uses %s. background_mode=%s",
                     preprocess_metadata.get("mask_semantics", PERSON_MASK_SEMANTICS),
                     BACKGROUND_KEEP_MASK_SEMANTICS,
+                    background_mode,
                 )
 
         cond_images, face_images, refer_images = self.prepare_source(
@@ -636,6 +641,13 @@ class WanAnimate:
             "replacement_boundary_strength": float(replacement_boundary_strength) if replace_flag else None,
             "replacement_transition_low": float(replacement_transition_low) if replace_flag else None,
             "replacement_transition_high": float(replacement_transition_high) if replace_flag else None,
+            "background_mode": (
+                preprocess_metadata.get("processing", {}).get("background", {}).get(
+                    "bg_inpaint_mode",
+                    preprocess_metadata.get("src_files", {}).get("background", {}).get("background_mode", "unknown"),
+                )
+                if replace_flag and preprocess_metadata is not None else None
+            ),
             "soft_band_available": bool(soft_band_images is not None) if replace_flag else False,
             "text_condition_encode_sec": text_condition_encode_sec,
             "reference_condition_encode_sec": reference_condition_encode_sec,

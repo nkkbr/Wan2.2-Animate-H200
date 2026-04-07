@@ -96,6 +96,7 @@ def build_preprocess_metadata(
     control_stabilization: dict | None = None,
     mask_generation: dict | None = None,
     soft_mask_settings: dict | None = None,
+    background_settings: dict | None = None,
     qa_outputs: dict | None = None,
 ) -> dict:
     if src_files is None:
@@ -154,6 +155,7 @@ def build_preprocess_metadata(
                 "dtype": "uint8",
                 "shape": [frame_count, height, width, 3],
                 "fps": float(fps_output),
+                "background_mode": "hole",
             }
             src_files["person_mask"] = {
                 "path": "src_mask.mp4",
@@ -205,6 +207,7 @@ def build_preprocess_metadata(
             "control_stabilization": control_stabilization or {},
             "sam2_mask_generation": mask_generation or {},
             "soft_mask": soft_mask_settings or {},
+            "background": background_settings or {},
         },
         "source_inputs": {
             "video_path": str(Path(video_path).resolve()),
@@ -281,6 +284,12 @@ def validate_preprocess_metadata(metadata: dict, src_root_path: str | Path) -> N
         )
         for key in ("background", "person_mask"):
             _require(key in src_files, f"replacement metadata missing required artifact: {key}")
+        background_mode = src_files["background"].get("background_mode")
+        if background_mode is not None:
+            _require(
+                background_mode in {"hole", "clean_plate_image", "clean_plate_video"},
+                f"Unsupported background_mode in metadata: {background_mode}",
+            )
         if "soft_band" in src_files:
             _require(
                 src_files["soft_band"].get("mask_semantics") == SOFT_BAND_SEMANTICS,

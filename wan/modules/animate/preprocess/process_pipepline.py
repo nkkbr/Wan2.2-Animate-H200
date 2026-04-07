@@ -37,6 +37,7 @@ from sam_utils import build_sam2_video_predictor
 from wan.utils.animate_contract import SOFT_BAND_SEMANTICS, load_image_rgb, validate_rgb_video
 from wan.utils.media_io import write_person_mask_artifact, write_rgb_artifact
 from wan.utils.replacement_masks import build_soft_boundary_band
+from background_clean_plate import build_clean_plate_background
 
 
 class ProcessPipeline():
@@ -99,6 +100,11 @@ class ProcessPipeline():
         soft_mask_mode="soft_band",
         soft_mask_band_width=24,
         soft_mask_blur_kernel=5,
+        bg_inpaint_mode="none",
+        bg_inpaint_method="telea",
+        bg_inpaint_mask_expand=16,
+        bg_inpaint_radius=5.0,
+        bg_temporal_smooth_strength=0.0,
         iterations=3,
         k=7,
         w_len=1,
@@ -203,7 +209,7 @@ class ProcessPipeline():
                 sam_reprompt_interval=sam_reprompt_interval,
             )
 
-            bg_images = []
+            hole_bg_images = []
             aug_masks = []
 
             for frame, mask in zip(frames, masks):
@@ -214,12 +220,12 @@ class ProcessPipeline():
                     each_aug_mask = mask
 
                 each_bg_image = frame * (1 - each_aug_mask[:, :, None])
-                bg_images.append(each_bg_image)
+                hole_bg_images.append(each_bg_image)
                 aug_masks.append(each_aug_mask)
 
             face_images = np.stack(face_images).astype(np.uint8)
             cond_images = np.stack(cond_images).astype(np.uint8)
-            bg_images = np.stack(bg_images).astype(np.uint8)
+            hole_bg_images = np.stack(hole_bg_images).astype(np.uint8)
             aug_masks = np.stack(aug_masks).astype(np.float32)
             soft_band_masks = None
             if soft_mask_mode != "none":
@@ -228,6 +234,17 @@ class ProcessPipeline():
                     band_width=soft_mask_band_width,
                     blur_kernel_size=soft_mask_blur_kernel,
                 ).astype(np.float32)
+            bg_images, background_debug = build_clean_plate_background(
+                np.stack(frames).astype(np.uint8),
+                aug_masks,
+                bg_inpaint_mode=bg_inpaint_mode,
+                soft_band=soft_band_masks,
+                bg_inpaint_mask_expand=bg_inpaint_mask_expand,
+                bg_inpaint_radius=bg_inpaint_radius,
+                bg_inpaint_method=bg_inpaint_method,
+                bg_temporal_smooth_strength=bg_temporal_smooth_strength,
+            )
+            bg_images = np.stack(bg_images).astype(np.uint8)
             qa_outputs = {}
             if export_qa_visuals:
                 face_bbox_overlay = make_face_bbox_overlay(np.stack(frames).astype(np.uint8), face_bboxes, face_bbox_curve)
@@ -286,6 +303,41 @@ class ProcessPipeline():
                         mask_semantics=SOFT_BAND_SEMANTICS,
                     )
                     qa_outputs["soft_band_overlay"] = qa_soft_band_overlay["path"]
+                qa_background_hole = write_rgb_artifact(
+                    frames=background_debug["hole_background"].astype(np.uint8),
+                    output_root=output_path,
+                    stem="background_hole",
+                    artifact_format="mp4",
+                    fps=fps,
+                )
+                qa_background_clean = write_rgb_artifact(
+                    frames=background_debug["clean_plate_background"].astype(np.uint8),
+                    output_root=output_path,
+                    stem="background_clean_plate",
+                    artifact_format="mp4",
+                    fps=fps,
+                )
+                qa_background_diff = write_rgb_artifact(
+                    frames=background_debug["background_diff"].astype(np.uint8),
+                    output_root=output_path,
+                    stem="background_diff",
+                    artifact_format="mp4",
+                    fps=fps,
+                )
+                qa_background_mask = write_person_mask_artifact(
+                    mask_frames=background_debug["inpaint_mask"].astype(np.float32),
+                    output_root=output_path,
+                    stem="background_inpaint_mask",
+                    artifact_format="mp4",
+                    fps=fps,
+                    mask_semantics="background_inpaint_region",
+                )
+                qa_outputs.update({
+                    "background_hole": qa_background_hole["path"],
+                    "background_clean_plate": qa_background_clean["path"],
+                    "background_diff": qa_background_diff["path"],
+                    "background_inpaint_mask": qa_background_mask["path"],
+                })
 
             src_files = {
                 "pose": write_rgb_artifact(
@@ -339,6 +391,7 @@ class ProcessPipeline():
                     fps=fps,
                     mask_semantics=SOFT_BAND_SEMANTICS,
                 )
+            src_files["background"]["background_mode"] = background_debug["background_mode"]
             outputs = {
                 "frame_count": len(frames),
                 "fps": float(fps),

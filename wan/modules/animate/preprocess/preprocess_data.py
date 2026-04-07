@@ -285,6 +285,38 @@ def _parse_args():
         default=5,
         help="Optional odd kernel size used to smooth the soft boundary band. Set to 0 to disable."
     )
+    parser.add_argument(
+        "--bg_inpaint_mode",
+        type=str,
+        default="none",
+        choices=["none", "image", "video"],
+        help="Background construction mode for replacement. 'none' keeps the legacy hole background, 'image' builds a clean plate with frame-wise inpainting."
+    )
+    parser.add_argument(
+        "--bg_inpaint_method",
+        type=str,
+        default="telea",
+        choices=["telea", "ns"],
+        help="OpenCV inpaint method used when --bg_inpaint_mode=image."
+    )
+    parser.add_argument(
+        "--bg_inpaint_mask_expand",
+        type=int,
+        default=16,
+        help="Additional mask expansion in pixels before background inpainting."
+    )
+    parser.add_argument(
+        "--bg_inpaint_radius",
+        type=float,
+        default=5.0,
+        help="Inpaint radius used for clean plate background construction."
+    )
+    parser.add_argument(
+        "--bg_temporal_smooth_strength",
+        type=float,
+        default=0.0,
+        help="EMA-like temporal smoothing strength applied only inside inpainted regions of the clean plate."
+    )
 
     parser.add_argument(
         "--replace_flag",
@@ -345,6 +377,8 @@ if __name__ == '__main__':
     assert Path(args.video_path).exists(), f"Video path does not exist: {args.video_path}"
     assert args.refer_path is not None, "Please provide --refer_path."
     assert Path(args.refer_path).exists(), f"Reference image path does not exist: {args.refer_path}"
+    if args.bg_inpaint_mode == "video":
+        raise NotImplementedError("bg_inpaint_mode=video is reserved for a future step. Use 'none' or 'image' in the current pipeline.")
     run_layout = None
     manifest_token = None
     if should_write_manifest(args):
@@ -415,6 +449,11 @@ if __name__ == '__main__':
                                             soft_mask_mode=args.soft_mask_mode,
                                             soft_mask_band_width=args.soft_mask_band_width,
                                             soft_mask_blur_kernel=args.soft_mask_blur_kernel,
+                                            bg_inpaint_mode=args.bg_inpaint_mode,
+                                            bg_inpaint_method=args.bg_inpaint_method,
+                                            bg_inpaint_mask_expand=args.bg_inpaint_mask_expand,
+                                            bg_inpaint_radius=args.bg_inpaint_radius,
+                                            bg_temporal_smooth_strength=args.bg_temporal_smooth_strength,
                                             iterations=args.iterations,
                                             k=args.k,
                                             w_len=args.w_len,
@@ -481,6 +520,13 @@ if __name__ == '__main__':
                 "soft_mask_mode": args.soft_mask_mode,
                 "soft_mask_band_width": args.soft_mask_band_width,
                 "soft_mask_blur_kernel": args.soft_mask_blur_kernel,
+            },
+            background_settings={
+                "bg_inpaint_mode": args.bg_inpaint_mode,
+                "bg_inpaint_method": args.bg_inpaint_method,
+                "bg_inpaint_mask_expand": args.bg_inpaint_mask_expand,
+                "bg_inpaint_radius": args.bg_inpaint_radius,
+                "bg_temporal_smooth_strength": args.bg_temporal_smooth_strength,
             },
             qa_outputs=pipeline_outputs.get("qa_outputs", {}),
         )

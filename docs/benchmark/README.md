@@ -93,6 +93,10 @@ soft mask / boundary-aware replacement 检查脚本见：
 
 - `scripts/eval/check_soft_mask_pipeline.py`
 
+clean plate 背景构建检查脚本见：
+
+- `scripts/eval/check_clean_plate_background.py`
+
 ## 7. 后续建议
 
 后续应把外部 benchmark 素材逐步补充到统一 manifest 中，并且每个新增素材都附带：
