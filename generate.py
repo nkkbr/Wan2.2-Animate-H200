@@ -67,6 +67,8 @@ EXAMPLE_PROMPT = {
     },
 }
 
+QUALITY_PRESETS = ("none", "hq_h200")
+
 
 def _validate_args(args):
     # Basic check
@@ -89,6 +91,15 @@ def _validate_args(args):
         assert args.image is not None, "Please specify the image path for i2v."
 
     cfg = WAN_CONFIGS[args.task]
+
+    if args.quality_preset != "none":
+        assert "animate" in args.task, "--quality_preset is currently only supported for Wan-Animate."
+        if args.quality_preset == "hq_h200":
+            if args.sample_steps is None:
+                args.sample_steps = 40
+            if args.offload_model is None:
+                args.offload_model = False
+            args.log_runtime_stats = True
 
     if "animate" in args.task:
         assert args.src_root_path is not None, "Please specify --src_root_path for Wan-Animate."
@@ -178,11 +189,24 @@ def _parse_args():
         default=None,
         help="The file to save the generated video to.")
     parser.add_argument(
+        "--quality_preset",
+        type=str,
+        default="none",
+        choices=list(QUALITY_PRESETS),
+        help="Optional quality/runtime preset. 'hq_h200' enables the recommended single-H200 quality-first path for Wan-Animate."
+    )
+    parser.add_argument(
         "--output_format",
         type=str,
         default="auto",
         choices=list(OUTPUT_VIDEO_FORMATS),
         help="Final output format. 'auto' infers from --save_file. Supported values: mp4, png_seq, ffv1."
+    )
+    parser.add_argument(
+        "--log_runtime_stats",
+        action="store_true",
+        default=False,
+        help="Log detailed clip-level runtime and memory statistics during Wan-Animate generation."
     )
     parser.add_argument(
         "--run_name",
@@ -382,6 +406,8 @@ def generate(args):
             args.offload_model = False if world_size > 1 else True
             logging.info(
                 f"offload_model is not specified, set to {args.offload_model}.")
+        if args.quality_preset != "none":
+            logging.info("Applied quality preset: %s", args.quality_preset)
         if world_size > 1:
             torch.cuda.set_device(local_rank)
             dist.init_process_group(
@@ -556,7 +582,10 @@ def generate(args):
                 sampling_steps=args.sample_steps,
                 guide_scale=args.sample_guide_scale,
                 seed=args.base_seed,
-                offload_model=args.offload_model)
+                offload_model=args.offload_model,
+                save_debug_dir=args.save_debug_dir,
+                log_runtime_stats=args.log_runtime_stats,
+                quality_preset=args.quality_preset)
         elif "s2v" in args.task:
             logging.info("Creating WanS2V pipeline.")
             wan_s2v = wan.WanS2V(
@@ -660,6 +689,16 @@ def generate(args):
                     logging.warning("Skipping audio merge because output_format=%s does not support in-place muxing.", resolved_output_format)
 
             if manifest_token is not None:
+                runtime_stats = getattr(wan_animate, "last_runtime_stats", None) if "animate" in args.task else None
+                metrics = None
+                if runtime_stats is not None:
+                    metrics = {
+                        "total_generate_sec": runtime_stats.get("total_generate_sec"),
+                        "static_condition_encode_sec": runtime_stats.get("static_condition_encode_sec"),
+                        "avg_clip_sec": runtime_stats.get("avg_clip_sec"),
+                        "clip_count": runtime_stats.get("clip_count"),
+                        "peak_memory_gb": runtime_stats.get("peak_memory_gb"),
+                    }
                 finalize_stage_manifest(
                     run_layout,
                     manifest_token,
@@ -668,7 +707,9 @@ def generate(args):
                         "save_file": args.save_file,
                         "output_format": resolved_output_format,
                         "save_debug_dir": args.save_debug_dir,
+                        "runtime_stats_path": runtime_stats.get("stats_path") if runtime_stats is not None else None,
                     },
+                    metrics=metrics,
                 )
     except Exception as exc:
         if rank == 0 and manifest_token is not None:

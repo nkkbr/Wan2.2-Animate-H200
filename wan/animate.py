@@ -1,11 +1,14 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
+import json
 import logging
 import math
 import os
+import time
 import cv2
 import types
 from copy import deepcopy
 from functools import partial
+from pathlib import Path
 from einops import rearrange
 import numpy as np
 import torch
@@ -147,6 +150,7 @@ class WanAnimate:
 
         self.sample_neg_prompt = config.sample_neg_prompt
         self.sample_prompt = config.prompt
+        self.last_runtime_stats = None
 
 
     def _configure_model(self, model, use_sp, dit_fsdp, shard_fn,
@@ -287,6 +291,56 @@ class WanAnimate:
         person_mask_images = load_person_mask_artifact(src_mask_artifact["path"], src_mask_artifact.get("format"))
         return bg_images, person_mask_images
 
+    def _encode_text_conditions(self, input_prompt, n_prompt, offload_model, guide_scale):
+        start_time = time.perf_counter()
+        context_null = None
+        if not self.t5_cpu:
+            self.text_encoder.model.to(self.device)
+            context = self.text_encoder([input_prompt], self.device)
+            if guide_scale > 1:
+                context_null = self.text_encoder([n_prompt], self.device)
+            if offload_model:
+                self.text_encoder.model.cpu()
+        else:
+            context = self.text_encoder([input_prompt], torch.device('cpu'))
+            context = [t.to(self.device) for t in context]
+            if guide_scale > 1:
+                context_null = self.text_encoder([n_prompt], torch.device('cpu'))
+                context_null = [t.to(self.device) for t in context_null]
+        return context, context_null, time.perf_counter() - start_time
+
+    def _build_static_reference_conditions(self, refer_images, lat_h, lat_w):
+        start_time = time.perf_counter()
+        with (
+            torch.autocast(device_type=str(self.device), dtype=torch.bfloat16, enabled=True),
+            torch.no_grad()
+        ):
+            refer_pixel_values = rearrange(
+                torch.tensor(refer_images / 127.5 - 1), "h w c -> 1 c h w"
+            ).to(device=self.device, dtype=torch.bfloat16)
+            reference_video = rearrange(refer_pixel_values, "b c h w -> b c 1 h w")
+            ref_latents = self.vae.encode(reference_video)
+            ref_latents = torch.stack(ref_latents)
+            mask_ref = self.get_i2v_mask(1, lat_h, lat_w, 1, device=self.device)
+            y_ref = torch.concat([mask_ref, ref_latents[0]]).to(dtype=torch.bfloat16, device=self.device)
+            img = reference_video[0, :, 0]
+            clip_context = self.clip.visual([img[:, None, :, :]]).to(dtype=torch.bfloat16, device=self.device)
+        return {
+            "y_ref": y_ref,
+            "clip_context": clip_context,
+        }, time.perf_counter() - start_time
+
+    def _write_runtime_stats(self, save_debug_dir, runtime_stats):
+        if save_debug_dir is None:
+            return None
+        debug_dir = Path(save_debug_dir)
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        stats_path = debug_dir / "wan_animate_runtime_stats.json"
+        with stats_path.open("w", encoding="utf-8") as handle:
+            json.dump(runtime_stats, handle, indent=2, ensure_ascii=False, sort_keys=True)
+            handle.write("\n")
+        return str(stats_path.resolve())
+
     def generate(
         self,
         src_root_path,
@@ -301,6 +355,9 @@ class WanAnimate:
         n_prompt="",
         seed=-1,
         offload_model=True,
+        save_debug_dir=None,
+        log_runtime_stats=False,
+        quality_preset="none",
     ):
         r"""
         Generates video frames from input image using diffusion process.
@@ -332,6 +389,12 @@ class WanAnimate:
                 Random seed for noise generation. If -1, use random seed
             offload_model (`bool`, *optional*, defaults to True):
                 If True, offloads models to CPU during generation to save VRAM
+            save_debug_dir (`str`, *optional*, defaults to None):
+                Optional directory for runtime statistics emitted by the animate pipeline.
+            log_runtime_stats (`bool`, *optional*, defaults to False):
+                Whether to log clip-level runtime and memory statistics.
+            quality_preset (`str`, *optional*, defaults to "none"):
+                Optional runtime preset label used for logging and experiment tracking.
 
         Returns:
             torch.Tensor:
@@ -342,6 +405,7 @@ class WanAnimate:
                 - W: Frame width 
         """
         refert_num = validate_refert_num(refert_num)
+        self.last_runtime_stats = None
 
         seed_g = torch.Generator(device=self.device)
         seed_g.manual_seed(seed)
@@ -377,17 +441,16 @@ class WanAnimate:
             src_ref_artifact=artifacts["reference"],
         )
         
-        if not self.t5_cpu:
-            self.text_encoder.model.to(self.device)
-            context = self.text_encoder([input_prompt], self.device)
-            context_null = self.text_encoder([n_prompt], self.device)
-            if offload_model:
-                self.text_encoder.model.cpu()
-        else:
-            context = self.text_encoder([input_prompt], torch.device('cpu'))
-            context_null = self.text_encoder([n_prompt], torch.device('cpu'))
-            context = [t.to(self.device) for t in context]
-            context_null = [t.to(self.device) for t in context_null]
+        total_start_time = time.perf_counter()
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats(self.device)
+
+        context, context_null, text_condition_encode_sec = self._encode_text_conditions(
+            input_prompt=input_prompt,
+            n_prompt=n_prompt,
+            offload_model=offload_model,
+            guide_scale=guide_scale,
+        )
 
         real_frame_len = len(cond_images)
         target_len = self.get_valid_len(real_frame_len, clip_len, overlap=refert_num)
@@ -419,13 +482,49 @@ class WanAnimate:
             )
 
         height, width = refer_images.shape[:2]
+        lat_h = height // 8
+        lat_w = width // 8
+        static_reference_conditions, reference_condition_encode_sec = self._build_static_reference_conditions(
+            refer_images=refer_images,
+            lat_h=lat_h,
+            lat_w=lat_w,
+        )
+        static_condition_encode_sec = text_condition_encode_sec + reference_condition_encode_sec
+
+        runtime_stats = {
+            "quality_preset": quality_preset,
+            "offload_model": bool(offload_model),
+            "clip_len": clip_len,
+            "refert_num": refert_num,
+            "sampling_steps": sampling_steps,
+            "guide_scale": float(guide_scale),
+            "real_frame_len": int(real_frame_len),
+            "target_len": int(target_len),
+            "text_condition_encode_sec": text_condition_encode_sec,
+            "reference_condition_encode_sec": reference_condition_encode_sec,
+            "static_condition_encode_sec": static_condition_encode_sec,
+            "clip_stats": [],
+        }
+        if log_runtime_stats:
+            logging.info(
+                "Static animate conditions encoded once: text=%.3fs reference=%.3fs total=%.3fs",
+                text_condition_encode_sec,
+                reference_condition_encode_sec,
+                static_condition_encode_sec,
+            )
+
         start = 0
         end = clip_len
         all_out_frames = []
+        clip_index = 0
         while True:
             if start + refert_num >= len(cond_images):
                 break
 
+            clip_index += 1
+            clip_start_time = time.perf_counter()
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats(self.device)
             if start == 0:
                 mask_reft_len = 0
             else:
@@ -479,15 +578,12 @@ class WanAnimate:
                 if isinstance(value, torch.Tensor):
                     batch[key] = value.to(device=self.device, dtype=torch.bfloat16)
 
-            ref_pixel_values = batch["refer_pixel_values"]
             refer_t_pixel_values = batch["refer_t_pixel_values"]
             conditioning_pixel_values = batch["conditioning_pixel_values"]
             face_pixel_values = batch["face_pixel_values"]
 
-            B, _, H, W = ref_pixel_values.shape
+            B, _, H, W = batch["refer_pixel_values"].shape
             T = clip_len
-            lat_h = H // 8
-            lat_w = W // 8
             lat_t = T // 4 + 1
             target_shape = [lat_t + 1, lat_h, lat_w]
             noise = [
@@ -533,19 +629,10 @@ class WanAnimate:
 
                 latents = noise
 
+                vae_encode_start_time = time.perf_counter()
                 pose_latents_no_ref =  self.vae.encode(conditioning_pixel_values.to(torch.bfloat16))
                 pose_latents_no_ref = torch.stack(pose_latents_no_ref)
                 pose_latents = torch.cat([pose_latents_no_ref], dim=2)
-
-                ref_pixel_values = rearrange(ref_pixel_values, "t c h w -> 1 c t h w")
-                ref_latents =  self.vae.encode(ref_pixel_values.to(torch.bfloat16))
-                ref_latents = torch.stack(ref_latents)
-
-                mask_ref = self.get_i2v_mask(1, lat_h, lat_w, 1, device=self.device)
-                y_ref = torch.concat([mask_ref, ref_latents[0]]).to(dtype=torch.bfloat16, device=self.device)
-
-                img = ref_pixel_values[0, :, 0]
-                clip_context = self.clip.visual([img[:, None, :, :]]).to(dtype=torch.bfloat16, device=self.device)
 
                 if mask_reft_len > 0:
                     if replace_flag:
@@ -605,13 +692,14 @@ class WanAnimate:
                         )[0]
                         msk_reft = self.get_i2v_mask(lat_t, lat_h, lat_w, mask_reft_len, device=self.device)
 
+                clip_vae_encode_sec = time.perf_counter() - vae_encode_start_time
                 y_reft = torch.concat([msk_reft, y_reft]).to(dtype=torch.bfloat16, device=self.device)
-                y = torch.concat([y_ref, y_reft], dim=1)
+                y = torch.concat([static_reference_conditions["y_ref"], y_reft], dim=1)
 
                 arg_c = {
                     "context": context, 
                     "seq_len": max_seq_len,
-                    "clip_fea": clip_context.to(dtype=torch.bfloat16, device=self.device),
+                    "clip_fea": static_reference_conditions["clip_context"],
                     "y": [y],
                     "pose_latents": pose_latents,
                     "face_pixel_values": face_pixel_values,
@@ -622,12 +710,13 @@ class WanAnimate:
                     arg_null = {
                         "context": context_null,
                         "seq_len": max_seq_len,
-                        "clip_fea": clip_context.to(dtype=torch.bfloat16, device=self.device),
+                        "clip_fea": static_reference_conditions["clip_context"],
                         "y": [y],
                         "pose_latents": pose_latents,
                         "face_pixel_values": face_pixel_values_uncond,
                     }
 
+                sampling_start_time = time.perf_counter()
                 for i, t in enumerate(tqdm(timesteps)):
                     latent_model_input = latents
                     timestep = [t]
@@ -661,16 +750,71 @@ class WanAnimate:
 
                     x0 = latents
 
+                clip_sampling_sec = time.perf_counter() - sampling_start_time
+                vae_decode_start_time = time.perf_counter()
                 x0 = [x.to(dtype=torch.float32) for x in x0]
                 out_frames = torch.stack(self.vae.decode([x0[0][:, 1:]]))
+                clip_vae_decode_sec = time.perf_counter() - vae_decode_start_time
                 
                 if start != 0:
                     out_frames = out_frames[:, :, refert_num:]
 
                 all_out_frames.append(out_frames.cpu())
 
+                clip_peak_memory_bytes = None
+                if torch.cuda.is_available():
+                    clip_peak_memory_bytes = int(torch.cuda.max_memory_allocated(self.device))
+                clip_total_sec = time.perf_counter() - clip_start_time
+                clip_stats = {
+                    "clip_index": clip_index,
+                    "start_frame": int(start),
+                    "end_frame": int(end),
+                    "mask_reft_len": int(mask_reft_len),
+                    "vae_encode_sec": clip_vae_encode_sec,
+                    "sampling_sec": clip_sampling_sec,
+                    "vae_decode_sec": clip_vae_decode_sec,
+                    "total_sec": clip_total_sec,
+                    "peak_memory_bytes": clip_peak_memory_bytes,
+                    "peak_memory_gb": round(clip_peak_memory_bytes / (1024 ** 3), 3) if clip_peak_memory_bytes is not None else None,
+                }
+                runtime_stats["clip_stats"].append(clip_stats)
+                if log_runtime_stats:
+                    logging.info(
+                        "Clip %d frames[%d,%d) total=%.3fs encode=%.3fs sample=%.3fs decode=%.3fs peak_mem=%.3fGB",
+                        clip_index,
+                        start,
+                        end,
+                        clip_total_sec,
+                        clip_vae_encode_sec,
+                        clip_sampling_sec,
+                        clip_vae_decode_sec,
+                        clip_stats["peak_memory_gb"] or 0.0,
+                    )
+
                 start += clip_len - refert_num
                 end += clip_len - refert_num
 
         videos = torch.cat(all_out_frames, dim=2)[:, :, :real_frame_len]
+        total_generate_sec = time.perf_counter() - total_start_time
+        peak_memory_bytes = None
+        if torch.cuda.is_available():
+            peak_memory_bytes = int(torch.cuda.max_memory_allocated(self.device))
+        clip_count = len(runtime_stats["clip_stats"])
+        runtime_stats.update({
+            "clip_count": clip_count,
+            "total_generate_sec": total_generate_sec,
+            "avg_clip_sec": (sum(item["total_sec"] for item in runtime_stats["clip_stats"]) / clip_count) if clip_count > 0 else 0.0,
+            "peak_memory_bytes": peak_memory_bytes,
+            "peak_memory_gb": round(peak_memory_bytes / (1024 ** 3), 3) if peak_memory_bytes is not None else None,
+        })
+        runtime_stats["stats_path"] = self._write_runtime_stats(save_debug_dir, runtime_stats)
+        self.last_runtime_stats = runtime_stats
+        if log_runtime_stats:
+            logging.info(
+                "Wan-Animate runtime summary: total=%.3fs clips=%d static=%.3fs peak_mem=%.3fGB",
+                total_generate_sec,
+                clip_count,
+                static_condition_encode_sec,
+                runtime_stats["peak_memory_gb"] or 0.0,
+            )
         return videos[0] if self.rank == 0 else None
