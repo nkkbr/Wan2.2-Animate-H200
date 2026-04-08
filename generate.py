@@ -137,8 +137,11 @@ def _validate_args(args):
         assert 0.0 <= args.replacement_transition_low < args.replacement_transition_high <= 1.0, (
             "--replacement_transition_low and --replacement_transition_high must satisfy 0 <= low < high <= 1."
         )
-        assert args.boundary_refine_mode in {"none", "deterministic"}, (
-            "--boundary_refine_mode must be one of: none, deterministic."
+        assert args.replacement_conditioning_mode in {"legacy", "rich"}, (
+            "--replacement_conditioning_mode must be one of: legacy, rich."
+        )
+        assert args.boundary_refine_mode in {"none", "deterministic", "v2"}, (
+            "--boundary_refine_mode must be one of: none, deterministic, v2."
         )
         assert 0.0 <= args.boundary_refine_strength <= 1.0, "--boundary_refine_strength must be in [0, 1]."
         assert 0.0 <= args.boundary_refine_sharpen <= 1.0, "--boundary_refine_sharpen must be in [0, 1]."
@@ -439,6 +442,13 @@ def _parse_args():
         help="Mask composition strategy for Wan-Animate replacement. 'soft_band' uses the preprocess soft boundary band when available."
     )
     parser.add_argument(
+        "--replacement_conditioning_mode",
+        type=str,
+        default="legacy",
+        choices=["legacy", "rich"],
+        help="How Wan-Animate replacement consumes richer preprocess signals. 'rich' uses uncertainty/occlusion/background confidence/face preservation maps."
+    )
+    parser.add_argument(
         "--replacement_mask_downsample_mode",
         type=str,
         default="area",
@@ -467,7 +477,7 @@ def _parse_args():
         "--boundary_refine_mode",
         type=str,
         default="none",
-        choices=["none", "deterministic"],
+        choices=["none", "deterministic", "v2"],
         help="Optional pixel-domain boundary refinement mode applied after Wan-Animate decoding."
     )
     parser.add_argument(
@@ -759,6 +769,7 @@ def generate(args):
                 face_guide_scale=args.face_guide_scale,
                 text_guide_scale=args.text_guide_scale,
                 replacement_mask_mode=args.replacement_mask_mode,
+                replacement_conditioning_mode=args.replacement_conditioning_mode,
                 replacement_mask_downsample_mode=args.replacement_mask_downsample_mode,
                 replacement_boundary_strength=args.replacement_boundary_strength,
                 replacement_transition_low=args.replacement_transition_low,

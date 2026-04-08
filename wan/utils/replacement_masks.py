@@ -41,6 +41,12 @@ def compose_background_keep_mask(
     visible_support: torch.Tensor | np.ndarray | None = None,
     unresolved_region: torch.Tensor | np.ndarray | None = None,
     background_confidence: torch.Tensor | np.ndarray | None = None,
+    occlusion_band: torch.Tensor | np.ndarray | None = None,
+    uncertainty_map: torch.Tensor | np.ndarray | None = None,
+    face_preserve: torch.Tensor | np.ndarray | None = None,
+    face_confidence: torch.Tensor | np.ndarray | None = None,
+    conditioning_mode: str = "legacy",
+    structure_guard_strength: float = 1.0,
     mode: str = "soft_band",
     boundary_strength: float = 0.5,
 ) -> torch.Tensor:
@@ -50,6 +56,9 @@ def compose_background_keep_mask(
     background_keep = 1.0 - torch.clamp(person_mask, 0.0, 1.0)
     if mode == "hard":
         return torch.clamp(background_keep, 0.0, 1.0)
+    if conditioning_mode not in {"legacy", "rich"}:
+        raise ValueError(f"Unsupported replacement conditioning mode: {conditioning_mode}")
+
     if background_keep_prior is not None:
         if not isinstance(background_keep_prior, torch.Tensor):
             background_keep_prior = torch.as_tensor(background_keep_prior, dtype=torch.float32)
@@ -74,6 +83,36 @@ def compose_background_keep_mask(
             background_keep = background_keep * (
                 1.0 - 0.75 * torch.clamp(unresolved_region.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
             )
+        if conditioning_mode == "rich":
+            if uncertainty_map is not None:
+                if not isinstance(uncertainty_map, torch.Tensor):
+                    uncertainty_map = torch.as_tensor(uncertainty_map, dtype=torch.float32)
+                background_keep = background_keep * (
+                    1.0 - 0.85 * torch.clamp(uncertainty_map.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
+                )
+            if occlusion_band is not None:
+                if not isinstance(occlusion_band, torch.Tensor):
+                    occlusion_band = torch.as_tensor(occlusion_band, dtype=torch.float32)
+                background_keep = background_keep * (
+                    1.0 - 0.65 * torch.clamp(occlusion_band.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
+                )
+            if face_preserve is not None:
+                if not isinstance(face_preserve, torch.Tensor):
+                    face_preserve = torch.as_tensor(face_preserve, dtype=torch.float32)
+                background_keep = background_keep * (
+                    1.0 - 0.55 * torch.clamp(face_preserve.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
+                )
+            if face_confidence is not None and soft_band is not None:
+                if not isinstance(face_confidence, torch.Tensor):
+                    face_confidence = torch.as_tensor(face_confidence, dtype=torch.float32)
+                if not isinstance(soft_band, torch.Tensor):
+                    soft_band = torch.as_tensor(soft_band, dtype=torch.float32)
+                background_keep = background_keep * (
+                    1.0 - 0.20
+                    * torch.clamp(face_confidence.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
+                    * torch.clamp(soft_band.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
+                )
+            background_keep = background_keep * float(np.clip(structure_guard_strength, 0.0, 1.0))
         return torch.clamp(background_keep, 0.0, 1.0)
     if mode != "soft_band":
         raise ValueError(f"Unsupported replacement mask mode: {mode}")
@@ -88,6 +127,26 @@ def compose_background_keep_mask(
         soft_band = torch.as_tensor(soft_band, dtype=torch.float32)
     soft_band = soft_band.to(dtype=torch.float32, device=background_keep.device)
     boundary_strength = max(0.0, min(float(boundary_strength), 1.0))
+    if conditioning_mode == "rich":
+        if uncertainty_map is not None:
+            if not isinstance(uncertainty_map, torch.Tensor):
+                uncertainty_map = torch.as_tensor(uncertainty_map, dtype=torch.float32)
+            boundary_strength = boundary_strength * (1.0 - 0.30 * torch.clamp(
+                uncertainty_map.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0
+            ))
+        if occlusion_band is not None:
+            if not isinstance(occlusion_band, torch.Tensor):
+                occlusion_band = torch.as_tensor(occlusion_band, dtype=torch.float32)
+            boundary_strength = boundary_strength * (1.0 - 0.20 * torch.clamp(
+                occlusion_band.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0
+            ))
+        if face_preserve is not None:
+            if not isinstance(face_preserve, torch.Tensor):
+                face_preserve = torch.as_tensor(face_preserve, dtype=torch.float32)
+            background_keep = background_keep * (
+                1.0 - 0.45 * torch.clamp(face_preserve.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
+            )
+        boundary_strength = boundary_strength * float(np.clip(structure_guard_strength, 0.0, 1.0))
     background_keep = background_keep - boundary_strength * torch.clamp(soft_band, 0.0, 1.0)
     return torch.clamp(background_keep, 0.0, 1.0)
 

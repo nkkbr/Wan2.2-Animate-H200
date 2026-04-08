@@ -62,6 +62,7 @@ from .utils.clip_blending import (
 from .utils.guidance import combine_animate_guidance_predictions
 from .utils.media_io import load_mask_artifact, load_person_mask_artifact, load_rgb_artifact, write_person_mask_artifact
 from .utils.replacement_masks import compose_background_keep_mask, derive_replacement_regions, resize_mask_volume
+from .utils.rich_conditioning import build_face_conditioning_maps, load_json_if_exists, summarize_reference_structure_guard
 from .utils.temporal_handoff import (
     compose_temporal_handoff_latents,
     pack_overlap_tensor_to_latent_slots,
@@ -373,6 +374,7 @@ class WanAnimate:
         boundary_refine_strength,
         boundary_refine_sharpen,
         boundary_refine_use_clean_plate,
+        replacement_conditioning_mode,
     ):
         stats = {
             "mode_requested": boundary_refine_mode,
@@ -431,6 +433,28 @@ class WanAnimate:
                 replacement_masks["soft_alpha"][:real_frame_len].cpu().numpy()
                 if replacement_masks["soft_alpha"] is not None else None
             ),
+            background_confidence=(
+                replacement_masks["background_confidence"][:real_frame_len].cpu().numpy()
+                if replacement_masks["background_confidence"] is not None else None
+            ),
+            uncertainty_map=(
+                replacement_masks["uncertainty_map"][:real_frame_len].cpu().numpy()
+                if replacement_masks["uncertainty_map"] is not None else None
+            ),
+            occlusion_band=(
+                replacement_masks["occlusion_band"][:real_frame_len].cpu().numpy()
+                if replacement_masks["occlusion_band"] is not None else None
+            ),
+            face_preserve_map=(
+                replacement_masks["face_preserve_map"][:real_frame_len].cpu().numpy()
+                if replacement_masks["face_preserve_map"] is not None else None
+            ),
+            face_confidence_map=(
+                replacement_masks["face_confidence_map"][:real_frame_len].cpu().numpy()
+                if replacement_masks["face_confidence_map"] is not None else None
+            ),
+            structure_guard_strength=replacement_masks["structure_guard_strength"],
+            mode=boundary_refine_mode,
             strength=boundary_refine_strength,
             sharpen=boundary_refine_sharpen,
         )
@@ -439,8 +463,14 @@ class WanAnimate:
             "applied": True,
             "background_source": background_source,
             "background_mode": background_mode,
+            "replacement_conditioning_mode": replacement_conditioning_mode,
             "strength": float(boundary_refine_strength),
             "sharpen": float(boundary_refine_sharpen),
+            "face_confidence_mean": float(replacement_masks["face_confidence_map"].mean().item())
+            if replacement_masks["face_confidence_map"] is not None else None,
+            "face_preserve_mean": float(replacement_masks["face_preserve_map"].mean().item())
+            if replacement_masks["face_preserve_map"] is not None else None,
+            "structure_guard_strength": float(replacement_masks["structure_guard_strength"]),
             **debug_data["metrics"],
         })
         if save_debug_dir is not None:
@@ -470,6 +500,10 @@ class WanAnimate:
         background_source_provenance_images,
         occlusion_band_images,
         uncertainty_map_images,
+        face_confidence_images,
+        face_preserve_images,
+        conditioning_mode,
+        structure_guard_strength,
         lat_h,
         lat_w,
         mask_mode,
@@ -521,6 +555,14 @@ class WanAnimate:
             torch.as_tensor(np.asarray(uncertainty_map_images), dtype=torch.float32)
             if uncertainty_map_images is not None else None
         )
+        face_confidence_map = (
+            torch.as_tensor(np.asarray(face_confidence_images), dtype=torch.float32)
+            if face_confidence_images is not None else None
+        )
+        face_preserve_map = (
+            torch.as_tensor(np.asarray(face_preserve_images), dtype=torch.float32)
+            if face_preserve_images is not None else None
+        )
         background_keep = compose_background_keep_mask(
             hard_foreground,
             soft_band=boundary_band,
@@ -529,6 +571,12 @@ class WanAnimate:
             visible_support=visible_support,
             unresolved_region=unresolved_region,
             background_confidence=background_confidence,
+            occlusion_band=occlusion_band,
+            uncertainty_map=uncertainty_map,
+            face_preserve=face_preserve_map,
+            face_confidence=face_confidence_map,
+            conditioning_mode=conditioning_mode,
+            structure_guard_strength=structure_guard_strength,
             mode=mask_mode,
             boundary_strength=boundary_strength,
         )
@@ -574,6 +622,10 @@ class WanAnimate:
             "background_source_provenance": background_source_provenance,
             "occlusion_band": occlusion_band,
             "uncertainty_map": uncertainty_map,
+            "face_confidence_map": face_confidence_map,
+            "face_preserve_map": face_preserve_map,
+            "conditioning_mode": conditioning_mode,
+            "structure_guard_strength": float(structure_guard_strength),
             "background_keep": background_keep,
             "background_keep_latent": background_keep_latent,
             "soft_band_latent": soft_band_latent,
@@ -624,6 +676,10 @@ class WanAnimate:
             mask_artifacts["occlusion_band"] = replacement_masks["occlusion_band"][:real_frame_len].cpu().numpy()
         if replacement_masks["uncertainty_map"] is not None:
             mask_artifacts["uncertainty_map"] = replacement_masks["uncertainty_map"][:real_frame_len].cpu().numpy()
+        if replacement_masks["face_confidence_map"] is not None:
+            mask_artifacts["face_confidence_map"] = replacement_masks["face_confidence_map"][:real_frame_len].cpu().numpy()
+        if replacement_masks["face_preserve_map"] is not None:
+            mask_artifacts["face_preserve_map"] = replacement_masks["face_preserve_map"][:real_frame_len].cpu().numpy()
         if replacement_masks["soft_band_latent"] is not None:
             mask_artifacts["latent_soft_band"] = replacement_masks["soft_band_latent"][:real_frame_len].cpu().numpy()
         if replacement_masks["soft_alpha_latent"] is not None:
@@ -784,6 +840,7 @@ class WanAnimate:
         sample_solver='dpm++',
         sampling_steps=20,
         guide_scale=1,
+        replacement_conditioning_mode="legacy",
         input_prompt="",
         n_prompt="",
         seed=-1,
@@ -878,7 +935,11 @@ class WanAnimate:
             raise ValueError(
                 f"temporal_handoff_strength must be in [0, 1]. Got {temporal_handoff_strength}."
             )
-        if boundary_refine_mode not in {"none", "deterministic"}:
+        if replacement_conditioning_mode not in {"legacy", "rich"}:
+            raise ValueError(
+                f"Unsupported replacement_conditioning_mode: {replacement_conditioning_mode}"
+            )
+        if boundary_refine_mode not in {"none", "deterministic", "v2"}:
             raise ValueError(f"Unsupported boundary_refine_mode: {boundary_refine_mode}")
         if not 0.0 <= float(boundary_refine_strength) <= 1.0:
             raise ValueError(f"boundary_refine_strength must be in [0, 1]. Got {boundary_refine_strength}.")
@@ -967,6 +1028,13 @@ class WanAnimate:
         background_source_provenance_images = None
         occlusion_band_images = None
         uncertainty_map_images = None
+        face_alpha_conditioning_images = None
+        face_uncertainty_conditioning_images = None
+        face_bbox_curve_data = None
+        face_pose_data = None
+        face_expression_data = None
+        face_conditioning = None
+        reference_structure_guard = summarize_reference_structure_guard(preprocess_metadata)
         bg_images = None
         if replace_flag:
             bg_images, person_mask_images = self.prepare_source_for_replace(
@@ -1016,6 +1084,21 @@ class WanAnimate:
                     artifacts["uncertainty_map"]["path"],
                     artifacts["uncertainty_map"].get("format"),
                 )
+            if "face_alpha" in artifacts:
+                face_alpha_conditioning_images = load_mask_artifact(
+                    artifacts["face_alpha"]["path"],
+                    artifacts["face_alpha"].get("format"),
+                )
+            if "face_uncertainty" in artifacts:
+                face_uncertainty_conditioning_images = load_mask_artifact(
+                    artifacts["face_uncertainty"]["path"],
+                    artifacts["face_uncertainty"].get("format"),
+                )
+            face_bbox_curve_data = load_json_if_exists(Path(src_root_path) / "face_bbox_curve.json")
+            if "face_pose" in artifacts:
+                face_pose_data = load_json_if_exists(Path(src_root_path) / artifacts["face_pose"]["path"])
+            if "face_expression" in artifacts:
+                face_expression_data = load_json_if_exists(Path(src_root_path) / artifacts["face_expression"]["path"])
             validate_loaded_preprocess_bundle(
                 cond_images=np.asarray(cond_images[:real_frame_len]),
                 face_images=np.asarray(face_images[:real_frame_len]),
@@ -1059,6 +1142,32 @@ class WanAnimate:
                 occlusion_band_images = self.inputs_padding(occlusion_band_images, target_len)
             if uncertainty_map_images is not None:
                 uncertainty_map_images = self.inputs_padding(uncertainty_map_images, target_len)
+            if face_alpha_conditioning_images is not None:
+                face_alpha_conditioning_images = self.inputs_padding(face_alpha_conditioning_images, target_len)
+            if face_uncertainty_conditioning_images is not None:
+                face_uncertainty_conditioning_images = self.inputs_padding(face_uncertainty_conditioning_images, target_len)
+            if face_bbox_curve_data is not None and "frames" in face_bbox_curve_data:
+                face_bbox_curve_data = {
+                    **face_bbox_curve_data,
+                    "frames": self.inputs_padding(face_bbox_curve_data["frames"], target_len),
+                }
+            if face_pose_data is not None and "frames" in face_pose_data:
+                face_pose_data = {
+                    **face_pose_data,
+                    "frames": self.inputs_padding(face_pose_data["frames"], target_len),
+                }
+            if face_expression_data is not None and "frames" in face_expression_data:
+                face_expression_data = {
+                    **face_expression_data,
+                    "frames": self.inputs_padding(face_expression_data["frames"], target_len),
+                }
+            face_conditioning = build_face_conditioning_maps(
+                face_alpha=np.asarray(face_alpha_conditioning_images) if face_alpha_conditioning_images is not None else None,
+                face_uncertainty=np.asarray(face_uncertainty_conditioning_images) if face_uncertainty_conditioning_images is not None else None,
+                face_bbox_curve=face_bbox_curve_data,
+                face_pose=face_pose_data,
+                face_expression=face_expression_data,
+            )
         else:
             validate_loaded_preprocess_bundle(
                 cond_images=np.asarray(cond_images[:real_frame_len]),
@@ -1103,6 +1212,14 @@ class WanAnimate:
                 ),
                 occlusion_band_images=np.asarray(occlusion_band_images) if occlusion_band_images is not None else None,
                 uncertainty_map_images=np.asarray(uncertainty_map_images) if uncertainty_map_images is not None else None,
+                face_confidence_images=(
+                    face_conditioning["face_confidence_map"] if face_conditioning is not None else None
+                ),
+                face_preserve_images=(
+                    face_conditioning["face_preserve_map"] if face_conditioning is not None else None
+                ),
+                conditioning_mode=replacement_conditioning_mode,
+                structure_guard_strength=reference_structure_guard["guard_strength"],
                 lat_h=lat_h,
                 lat_w=lat_w,
                 mask_mode=replacement_mask_mode,
@@ -1143,6 +1260,7 @@ class WanAnimate:
             "real_frame_len": int(real_frame_len),
             "target_len": int(target_len),
             "replacement_mask_mode": replacement_mask_mode if replace_flag else None,
+            "replacement_conditioning_mode": replacement_conditioning_mode if replace_flag else None,
             "replacement_mask_downsample_mode": replacement_mask_downsample_mode if replace_flag else None,
             "replacement_boundary_strength": float(replacement_boundary_strength) if replace_flag else None,
             "replacement_transition_low": float(replacement_transition_low) if replace_flag else None,
@@ -1165,6 +1283,7 @@ class WanAnimate:
                 )
                 if preprocess_metadata is not None else None
             ),
+            "reference_structure_guard_strength": reference_structure_guard["guard_strength"] if replace_flag else None,
             "reference_artifact_path": artifacts["reference"]["path"],
             "face_landmarks_available": bool(preprocess_metadata and "face_landmarks" in preprocess_metadata.get("src_files", {})),
             "face_pose_available": bool(preprocess_metadata and "face_pose" in preprocess_metadata.get("src_files", {})),
@@ -1172,6 +1291,8 @@ class WanAnimate:
             "face_alpha_available": bool(preprocess_metadata and "face_alpha" in preprocess_metadata.get("src_files", {})),
             "face_parsing_available": bool(preprocess_metadata and "face_parsing" in preprocess_metadata.get("src_files", {})),
             "face_uncertainty_available": bool(preprocess_metadata and "face_uncertainty" in preprocess_metadata.get("src_files", {})),
+            "face_conditioning_map_available": bool(face_conditioning and face_conditioning.get("summary", {}).get("available")) if replace_flag else False,
+            "face_conditioning_summary": face_conditioning.get("summary") if replace_flag and face_conditioning is not None else None,
             "pose_tracks_available": bool(preprocess_metadata and "pose_tracks" in preprocess_metadata.get("src_files", {})),
             "limb_tracks_available": bool(preprocess_metadata and "limb_tracks" in preprocess_metadata.get("src_files", {})),
             "hand_tracks_available": bool(preprocess_metadata and "hand_tracks" in preprocess_metadata.get("src_files", {})),
@@ -1696,6 +1817,7 @@ class WanAnimate:
                 boundary_refine_strength=boundary_refine_strength,
                 boundary_refine_sharpen=boundary_refine_sharpen,
                 boundary_refine_use_clean_plate=boundary_refine_use_clean_plate,
+                replacement_conditioning_mode=replacement_conditioning_mode,
             )
             boundary_refinement_stats["runtime_sec"] = time.perf_counter() - boundary_refine_start
             runtime_stats["boundary_refinement"] = boundary_refinement_stats

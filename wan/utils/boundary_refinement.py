@@ -131,6 +131,13 @@ def refine_boundary_frames(
     person_mask: np.ndarray,
     soft_band: np.ndarray | None = None,
     soft_alpha: np.ndarray | None = None,
+    background_confidence: np.ndarray | None = None,
+    uncertainty_map: np.ndarray | None = None,
+    occlusion_band: np.ndarray | None = None,
+    face_preserve_map: np.ndarray | None = None,
+    face_confidence_map: np.ndarray | None = None,
+    structure_guard_strength: float = 1.0,
+    mode: str = "deterministic",
     strength: float = 0.35,
     sharpen: float = 0.15,
     inner_width: int = 2,
@@ -150,6 +157,15 @@ def refine_boundary_frames(
         raise ValueError(f"soft_band must match person_mask shape. Got {soft_band.shape} vs {person_mask.shape}.")
     if soft_alpha is not None and soft_alpha.shape != person_mask.shape:
         raise ValueError(f"soft_alpha must match person_mask shape. Got {soft_alpha.shape} vs {person_mask.shape}.")
+    for name, value in (
+        ("background_confidence", background_confidence),
+        ("uncertainty_map", uncertainty_map),
+        ("occlusion_band", occlusion_band),
+        ("face_preserve_map", face_preserve_map),
+        ("face_confidence_map", face_confidence_map),
+    ):
+        if value is not None and np.asarray(value).shape != person_mask.shape:
+            raise ValueError(f"{name} must match person_mask shape. Got {np.asarray(value).shape} vs {person_mask.shape}.")
 
     strength = max(0.0, min(float(strength), 1.0))
     sharpen = max(0.0, min(float(sharpen), 1.0))
@@ -163,17 +179,103 @@ def refine_boundary_frames(
     background = background_frames.astype(np.float32) / 255.0
     sharpened = apply_unsharp_mask(generated, sigma=sharpen_sigma, amount=sharpen)
 
-    sharpen_alpha = np.clip(inner_band * sharpen, 0.0, 1.0)[..., None]
-    refined = generated * (1.0 - sharpen_alpha) + sharpened * sharpen_alpha
-
     target_foreground_alpha = (
         np.clip(soft_alpha, 0.0, 1.0)[..., None]
         if soft_alpha is not None
         else np.clip(person_mask + outer_band, 0.0, 1.0)[..., None]
     )
-    band_blend = np.clip(outer_band * strength, 0.0, 1.0)[..., None]
-    composite = refined * target_foreground_alpha + background * (1.0 - target_foreground_alpha)
-    refined = refined * (1.0 - band_blend) + composite * band_blend
+
+    if mode not in {"deterministic", "v2"}:
+        raise ValueError(f"Unsupported boundary refinement mode: {mode}")
+
+    if mode == "deterministic":
+        sharpen_alpha = np.clip(inner_band * sharpen, 0.0, 1.0)[..., None]
+        refined = generated * (1.0 - sharpen_alpha) + sharpened * sharpen_alpha
+        band_blend = np.clip(outer_band * strength, 0.0, 1.0)[..., None]
+        composite = refined * target_foreground_alpha + background * (1.0 - target_foreground_alpha)
+        refined = refined * (1.0 - band_blend) + composite * band_blend
+        extra_debug = {
+            "background_confidence": np.ones_like(person_mask, dtype=np.float32),
+            "uncertainty_map": np.zeros_like(person_mask, dtype=np.float32),
+            "occlusion_band": np.zeros_like(person_mask, dtype=np.float32),
+            "face_preserve_map": np.zeros_like(person_mask, dtype=np.float32),
+            "face_confidence_map": np.zeros_like(person_mask, dtype=np.float32),
+            "structure_guard_map": np.full_like(person_mask, float(np.clip(structure_guard_strength, 0.0, 1.0)), dtype=np.float32),
+            "adaptive_composite_strength": band_blend[..., 0],
+            "adaptive_sharpen_alpha": sharpen_alpha[..., 0],
+        }
+    else:
+        background_confidence = (
+            np.ones_like(person_mask, dtype=np.float32)
+            if background_confidence is None else np.clip(np.asarray(background_confidence, dtype=np.float32), 0.0, 1.0)
+        )
+        uncertainty_map = (
+            np.zeros_like(person_mask, dtype=np.float32)
+            if uncertainty_map is None else np.clip(np.asarray(uncertainty_map, dtype=np.float32), 0.0, 1.0)
+        )
+        occlusion_band = (
+            np.zeros_like(person_mask, dtype=np.float32)
+            if occlusion_band is None else np.clip(np.asarray(occlusion_band, dtype=np.float32), 0.0, 1.0)
+        )
+        face_preserve_map = (
+            np.zeros_like(person_mask, dtype=np.float32)
+            if face_preserve_map is None else np.clip(np.asarray(face_preserve_map, dtype=np.float32), 0.0, 1.0)
+        )
+        face_confidence_map = (
+            np.zeros_like(person_mask, dtype=np.float32)
+            if face_confidence_map is None else np.clip(np.asarray(face_confidence_map, dtype=np.float32), 0.0, 1.0)
+        )
+        structure_guard = float(np.clip(structure_guard_strength, 0.70, 1.0))
+        target_alpha_2d = target_foreground_alpha[..., 0]
+        outer_focus = np.clip(outer_band * (1.0 - target_alpha_2d), 0.0, 1.0)
+        edge_focus = np.clip(outer_band * target_alpha_2d, 0.0, 1.0)
+
+        adaptive_sharpen = np.clip(0.85 * inner_band + 0.65 * edge_focus, 0.0, 1.0)
+        adaptive_sharpen = adaptive_sharpen * (1.0 - 0.85 * uncertainty_map)
+        adaptive_sharpen = adaptive_sharpen * (0.35 + 0.65 * background_confidence)
+        adaptive_sharpen = adaptive_sharpen * (1.0 - 0.45 * occlusion_band)
+        adaptive_sharpen = adaptive_sharpen * structure_guard
+        adaptive_sharpen = np.clip(
+            adaptive_sharpen + 0.18 * np.clip(face_preserve_map * (0.4 + 0.6 * face_confidence_map), 0.0, 1.0),
+            0.0,
+            1.0,
+        )
+        sharpen_alpha = np.clip(adaptive_sharpen * sharpen, 0.0, 1.0)[..., None]
+        refined = generated * (1.0 - sharpen_alpha) + sharpened * sharpen_alpha
+
+        adaptive_blend = np.clip(outer_focus * strength, 0.0, 1.0)
+        adaptive_blend = adaptive_blend * (0.25 + 0.75 * background_confidence)
+        adaptive_blend = adaptive_blend * (1.0 - 0.80 * uncertainty_map)
+        adaptive_blend = adaptive_blend * (1.0 - 0.55 * occlusion_band)
+        adaptive_blend = adaptive_blend * (1.0 - 0.50 * face_preserve_map)
+        adaptive_blend = np.clip(adaptive_blend * structure_guard, 0.0, 1.0)
+        band_blend = adaptive_blend[..., None]
+
+        composite = refined * target_foreground_alpha + background * (1.0 - target_foreground_alpha)
+        refined = refined * (1.0 - band_blend) + composite * band_blend
+        edge_boost = np.clip(edge_focus * (0.55 + 0.45 * target_alpha_2d), 0.0, 1.0)
+        edge_boost = edge_boost * (1.0 - 0.45 * uncertainty_map)
+        edge_boost = edge_boost * (0.35 + 0.65 * background_confidence)
+        edge_boost = edge_boost * (1.0 - 0.40 * occlusion_band)
+        edge_boost = edge_boost * (1.0 - 0.35 * face_preserve_map)
+        edge_boost = np.clip(edge_boost * structure_guard, 0.0, 1.0)
+        edge_boost_alpha = np.clip(edge_boost * (0.30 + 0.70 * sharpen), 0.0, 1.0)[..., None]
+        edge_detail = np.clip(sharpened - background, -1.0, 1.0)
+        refined = np.clip(refined + edge_boost_alpha * 0.24 * edge_detail, 0.0, 1.0)
+        extra_debug = {
+            "background_confidence": background_confidence,
+            "uncertainty_map": uncertainty_map,
+            "occlusion_band": occlusion_band,
+            "face_preserve_map": face_preserve_map,
+            "face_confidence_map": face_confidence_map,
+            "structure_guard_map": np.full_like(person_mask, structure_guard, dtype=np.float32),
+            "adaptive_composite_strength": adaptive_blend.astype(np.float32),
+            "adaptive_sharpen_alpha": sharpen_alpha[..., 0].astype(np.float32),
+            "outer_focus": outer_focus.astype(np.float32),
+            "edge_focus": edge_focus.astype(np.float32),
+            "edge_boost_alpha": edge_boost_alpha[..., 0].astype(np.float32),
+        }
+
     refined = np.clip(refined, 0.0, 1.0)
     refined_u8 = np.clip(np.rint(refined * 255.0), 0, 255).astype(np.uint8)
 
@@ -191,8 +293,10 @@ def refine_boundary_frames(
         "sharpen_alpha": sharpen_alpha[..., 0],
         "band_blend": band_blend[..., 0],
         "target_foreground_alpha": target_foreground_alpha[..., 0],
+        "mode": mode,
         "metrics": metrics,
     }
+    debug.update(extra_debug)
     return refined_u8, debug
 
 
@@ -264,6 +368,21 @@ def write_boundary_refinement_debug_artifacts(
         "blend_alpha": band_blend,
         "target_foreground_alpha": target_alpha,
     }
+    for key in (
+        "background_confidence",
+        "uncertainty_map",
+        "occlusion_band",
+        "face_preserve_map",
+        "face_confidence_map",
+        "structure_guard_map",
+        "adaptive_composite_strength",
+        "adaptive_sharpen_alpha",
+        "outer_focus",
+        "edge_focus",
+        "edge_boost_alpha",
+    ):
+        if key in debug_data:
+            masks[key] = np.asarray(debug_data[key], dtype=np.float32)
     artifacts = {
         "comparison": str(Path(comparison_path).resolve()),
     }
