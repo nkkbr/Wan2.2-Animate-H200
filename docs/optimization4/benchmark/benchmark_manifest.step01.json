@@ -1,0 +1,23 @@
+{
+  "manifest_name": "optimization4_step01_edge_mini_bootstrap_v1",
+  "description": "Bootstrap edge-labeled mini benchmark derived from the 10-second replacement source clip and a frozen high-precision preprocess bundle.",
+  "cases": [
+    {
+      "case_id": "replacement_short10s_bootstrap_v1",
+      "video_path": "/home/user1/wan2.2/test1/260306_01_step_1_0000_0010.mp4",
+      "label_source_preprocess_dir": "/home/user1/wan2.2_20260407/Wan2.2/runs/optimization3_step06_round5_ab/preprocess_video_v2/preprocess",
+      "baseline_prediction_preprocess_dir": "/home/user1/wan2.2_20260407/Wan2.2/runs/optimization3_step08_round2_generate_ab_v3/repeat_01/face_focus_highres/preprocess",
+      "selection_mode": "mixed_even_and_difficulty",
+      "target_keyframe_count": 24,
+      "min_keyframe_count": 20,
+      "difficulty_weights": {
+        "boundary_band": 0.45,
+        "uncertainty": 0.30,
+        "occlusion": 0.15,
+        "soft_alpha_transition": 0.10
+      },
+      "bootstrap_label_version": "edge_v1",
+      "label_status": "bootstrap_unreviewed"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "policy_name": "optimization4_step01_edge_mini_gate_v1",
+  "required_case_names": [
+    "edge_mini_dataset_bootstrap",
+    "baseline_preprocess_contract",
+    "baseline_edge_groundtruth_metrics"
+  ],
+  "required_outputs": [
+    "summary.json",
+    "summary.md",
+    "gate_result.json"
+  ],
+  "minimum_keyframe_count": 20,
+  "metric_thresholds": {
+    "boundary_f1_mean_min": 0.30,
+    "alpha_mae_mean_max": 0.05,
+    "trimap_error_mean_max": 0.35
+  }
+}

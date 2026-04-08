@@ -1,0 +1,62 @@
+{
+  "schema_name": "optimization4_edge_label_v1",
+  "description": "Edge-labeled mini benchmark schema for optimization4. Labels may be bootstrap-generated in v1, but source and review status must be explicit.",
+  "required_top_level_fields": [
+    "schema_version",
+    "case_id",
+    "source_video_path",
+    "label_source_preprocess_dir",
+    "label_status",
+    "preprocess_frame_index",
+    "source_frame_index",
+    "export_shape",
+    "annotations"
+  ],
+  "annotation_fields": {
+    "hard_foreground": {
+      "type": "binary_mask",
+      "required": true
+    },
+    "soft_alpha": {
+      "type": "grayscale_alpha",
+      "required": true
+    },
+    "trimap": {
+      "type": "trimap_0_128_255",
+      "required": true
+    },
+    "boundary_mask": {
+      "type": "binary_mask",
+      "required": true
+    },
+    "occlusion_band": {
+      "type": "binary_mask",
+      "required": false
+    },
+    "uncertainty_map": {
+      "type": "float_map_0_1_or_uint8",
+      "required": false
+    },
+    "hair_boundary": {
+      "type": "binary_mask",
+      "required": false
+    },
+    "hand_boundary": {
+      "type": "binary_mask",
+      "required": false
+    },
+    "cloth_boundary": {
+      "type": "binary_mask",
+      "required": false
+    },
+    "face_boundary": {
+      "type": "binary_mask",
+      "required": false
+    }
+  },
+  "allowed_label_status": [
+    "bootstrap_unreviewed",
+    "bootstrap_reviewed",
+    "manual_verified"
+  ]
+}
