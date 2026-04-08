@@ -22,6 +22,10 @@
   - edge-labeled mini-set 的标签结构定义
 - `gate_policy.step01.json`
   - Step 01 的 gate 判定规则
+- `candidate_manifest.step05.json`
+  - Step 05 generate-side edge candidate shortlist
+- `candidate_score_policy.step05.json`
+  - Step 05 generate-side candidate scoring policy
 - `01-edge-labeled-mini-benchmark-and-gates-findings.md`
   - Step 01 的正式结论与 baseline 指标
 - `02-high-quality-alpha-matting-upgrade-findings.md`
@@ -30,6 +34,8 @@
   - Step 03 的正式结论与三轮 generate-side rich conditioning AB 结果
 - `04-boundary-roi-two-stage-highres-refine-findings.md`
   - Step 04 的正式结论与三轮 boundary ROI two-stage refine AB 结果
+- `05-generate-side-edge-candidate-search-findings.md`
+  - Step 05 的正式结论与三轮 generate-side edge candidate search 结果
 - `06-semantic-boundary-specialization-findings.md`
   - Step 06 的正式结论与三轮 semantic boundary specialization AB 结果
 - `07-local-edge-super-resolution-detail-restoration-findings.md`
@@ -193,6 +199,38 @@ python scripts/eval/compute_local_edge_restoration_metrics.py \
 python scripts/eval/evaluate_optimization4_local_edge_benchmark.py \
   --summary_json runs/optimization4_step07_round1_ab/summary.json \
   --output_json runs/optimization4_step07_round1_ab/gate_result.json
+```
+
+### 3.20 synthetic generate candidate selection 检查
+
+```bash
+python scripts/eval/check_generate_candidate_selection.py
+```
+
+### 3.21 运行 Step 05 generate-side edge candidate search
+
+```bash
+python scripts/eval/run_generate_edge_candidate_search.py \
+  --suite_name optimization4_step05_round1_ab \
+  --src_root_path runs/optimization4_step06_round1_preprocess/preprocess \
+  --candidate_manifest_json docs/optimization4/benchmark/candidate_manifest.step05.json
+```
+
+### 3.22 选择 Step 05 最优 generate candidate
+
+```bash
+python scripts/eval/select_best_generate_candidate.py \
+  --summary_json runs/optimization4_step05_round1_ab/summary.json \
+  --score_policy_json docs/optimization4/benchmark/candidate_score_policy.step05.json \
+  --output_json runs/optimization4_step05_round1_ab/selection_result.json
+```
+
+### 3.23 评估 Step 05 candidate search gate
+
+```bash
+python scripts/eval/evaluate_optimization4_generate_candidate_search.py \
+  --selection_json runs/optimization4_step05_round1_ab/selection_result.json \
+  --output_json runs/optimization4_step05_round1_ab/gate_result.json
 ```
 
 

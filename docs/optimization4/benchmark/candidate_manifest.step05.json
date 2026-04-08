@@ -1,0 +1,76 @@
+{
+  "default_candidate": "default_legacy",
+  "cases": [
+    {
+      "name": "baseline_45f",
+      "frame_num": 45,
+      "refert_num": 9,
+      "sample_steps": 4,
+      "sample_shift": 5.0,
+      "base_seed": 123456
+    },
+    {
+      "name": "short_33f",
+      "frame_num": 33,
+      "refert_num": 5,
+      "sample_steps": 4,
+      "sample_shift": 5.0,
+      "base_seed": 123457
+    },
+    {
+      "name": "long_53f",
+      "frame_num": 53,
+      "refert_num": 9,
+      "sample_steps": 4,
+      "sample_shift": 5.0,
+      "base_seed": 123458
+    }
+  ],
+  "candidates": [
+    {
+      "name": "default_legacy",
+      "is_default": true,
+      "replacement_conditioning_mode": "legacy",
+      "boundary_refine_mode": "none",
+      "replacement_boundary_strength": 0.5,
+      "replacement_transition_low": 0.1,
+      "replacement_transition_high": 0.9,
+      "boundary_refine_strength": 0.35,
+      "boundary_refine_sharpen": 0.15,
+      "description": "Current default generate path."
+    },
+    {
+      "name": "legacy_loose",
+      "replacement_conditioning_mode": "legacy",
+      "boundary_refine_mode": "none",
+      "replacement_boundary_strength": 0.42,
+      "replacement_transition_low": 0.14,
+      "replacement_transition_high": 0.92,
+      "boundary_refine_strength": 0.35,
+      "boundary_refine_sharpen": 0.15,
+      "description": "Lightly loosened legacy conditioning; best single-case candidate in Round 2."
+    },
+    {
+      "name": "legacy_ultra_loose",
+      "replacement_conditioning_mode": "legacy",
+      "boundary_refine_mode": "none",
+      "replacement_boundary_strength": 0.36,
+      "replacement_transition_low": 0.18,
+      "replacement_transition_high": 0.96,
+      "boundary_refine_strength": 0.35,
+      "boundary_refine_sharpen": 0.15,
+      "description": "More aggressive legacy conditioning loosening; best mean score across Round 3 multi-case validation."
+    },
+    {
+      "name": "semantic_cond_only",
+      "replacement_conditioning_mode": "semantic_v1",
+      "boundary_refine_mode": "none",
+      "replacement_boundary_strength": 0.42,
+      "replacement_transition_low": 0.12,
+      "replacement_transition_high": 0.90,
+      "boundary_refine_strength": 0.35,
+      "boundary_refine_sharpen": 0.15,
+      "description": "Semantic-only conditioning candidate retained for final stability comparison."
+    }
+  ]
+}

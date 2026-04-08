@@ -1,0 +1,56 @@
+{
+  "groups": {
+    "boundary": {
+      "weight": 0.68,
+      "metrics": [
+        {
+          "name": "halo_reduction_pct",
+          "path": "derived_metrics.halo_reduction_pct",
+          "direction": "higher",
+          "weight": 0.34
+        },
+        {
+          "name": "gradient_gain_pct",
+          "path": "derived_metrics.gradient_gain_pct",
+          "direction": "higher",
+          "weight": 0.33
+        },
+        {
+          "name": "contrast_gain_pct",
+          "path": "derived_metrics.contrast_gain_pct",
+          "direction": "higher",
+          "weight": 0.33
+        }
+      ]
+    },
+    "stability": {
+      "weight": 0.24,
+      "metrics": [
+        {
+          "name": "seam_degradation_pct",
+          "path": "derived_metrics.seam_degradation_pct",
+          "direction": "lower",
+          "weight": 0.55
+        },
+        {
+          "name": "background_degradation_pct",
+          "path": "derived_metrics.background_degradation_pct",
+          "direction": "lower",
+          "weight": 0.45
+        }
+      ]
+    },
+    "runtime": {
+      "weight": 0.08,
+      "metrics": [
+        {
+          "name": "runtime_increase_pct",
+          "path": "derived_metrics.runtime_increase_pct",
+          "direction": "lower",
+          "transform": "log1p_signed",
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
