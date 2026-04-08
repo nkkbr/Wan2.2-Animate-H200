@@ -1087,6 +1087,12 @@ class WanAnimate:
                 if preprocess_metadata is not None else None
             ),
             "reference_artifact_path": artifacts["reference"]["path"],
+            "face_landmarks_available": bool(preprocess_metadata and "face_landmarks" in preprocess_metadata.get("src_files", {})),
+            "face_pose_available": bool(preprocess_metadata and "face_pose" in preprocess_metadata.get("src_files", {})),
+            "face_expression_available": bool(preprocess_metadata and "face_expression" in preprocess_metadata.get("src_files", {})),
+            "face_alpha_available": bool(preprocess_metadata and "face_alpha" in preprocess_metadata.get("src_files", {})),
+            "face_parsing_available": bool(preprocess_metadata and "face_parsing" in preprocess_metadata.get("src_files", {})),
+            "face_uncertainty_available": bool(preprocess_metadata and "face_uncertainty" in preprocess_metadata.get("src_files", {})),
             "soft_band_available": bool(soft_band_images is not None) if replace_flag else False,
             "hard_foreground_available": bool(hard_foreground_images is not None) if replace_flag else False,
             "soft_alpha_available": bool(soft_alpha_images is not None) if replace_flag else False,

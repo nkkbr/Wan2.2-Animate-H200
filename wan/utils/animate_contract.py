@@ -18,6 +18,9 @@ SOFT_BAND_SEMANTICS = "boundary_transition_band"
 BOUNDARY_BAND_SEMANTICS = SOFT_BAND_SEMANTICS
 OCCLUSION_BAND_SEMANTICS = "occlusion_band"
 UNCERTAINTY_MAP_SEMANTICS = "uncertainty_map"
+FACE_ALPHA_SEMANTICS = "face_alpha"
+FACE_UNCERTAINTY_SEMANTICS = "face_uncertainty"
+FACE_PARSING_SEMANTICS = "face_parsing_v1"
 DEFAULT_REFERT_NUM = 5
 
 
@@ -343,6 +346,21 @@ def validate_preprocess_metadata(metadata: dict, src_root_path: str | Path) -> N
                 src_files["uncertainty_map"].get("mask_semantics") == UNCERTAINTY_MAP_SEMANTICS,
                 "uncertainty_map artifact semantics mismatch.",
             )
+        if "face_alpha" in src_files:
+            _require(
+                src_files["face_alpha"].get("mask_semantics") == FACE_ALPHA_SEMANTICS,
+                "face_alpha artifact semantics mismatch.",
+            )
+        if "face_uncertainty" in src_files:
+            _require(
+                src_files["face_uncertainty"].get("mask_semantics") == FACE_UNCERTAINTY_SEMANTICS,
+                "face_uncertainty artifact semantics mismatch.",
+            )
+        if "face_parsing" in src_files:
+            _require(
+                src_files["face_parsing"].get("label_semantics") == FACE_PARSING_SEMANTICS,
+                "face_parsing artifact semantics mismatch.",
+            )
 
     root = Path(src_root_path)
     for name, artifact in src_files.items():
@@ -397,10 +415,16 @@ def resolve_preprocess_artifacts(
             "hard_foreground",
             "soft_alpha",
             "boundary_band",
-            "background_keep_prior",
-            "occlusion_band",
-            "uncertainty_map",
-        }
+                "background_keep_prior",
+                "occlusion_band",
+                "uncertainty_map",
+                "face_landmarks",
+                "face_pose",
+                "face_expression",
+                "face_alpha",
+                "face_parsing",
+                "face_uncertainty",
+            }
     }
     return artifacts, metadata
 

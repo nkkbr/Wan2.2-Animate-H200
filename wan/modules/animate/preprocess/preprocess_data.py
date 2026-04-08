@@ -235,6 +235,55 @@ def _parse_args():
         help="Extra smoothing strength applied to face bbox stabilization after ROI reruns."
     )
     parser.add_argument(
+        "--face_analysis_mode",
+        type=str,
+        default="heuristic",
+        choices=["none", "heuristic"],
+        help="Enable the structured face analysis stack. 'heuristic' writes tracked face bbox, landmarks, head pose, expression, parsing, alpha, and uncertainty artifacts."
+    )
+    parser.add_argument(
+        "--face_tracking_smooth_strength",
+        type=float,
+        default=0.90,
+        help="Temporal smoothing strength for the tracking-aware face bbox layer."
+    )
+    parser.add_argument(
+        "--face_tracking_max_scale_change",
+        type=float,
+        default=1.08,
+        help="Maximum per-frame face bbox scale change allowed in the face tracking layer."
+    )
+    parser.add_argument(
+        "--face_tracking_max_center_shift",
+        type=float,
+        default=0.016,
+        help="Maximum normalized per-frame center shift allowed in the face tracking layer."
+    )
+    parser.add_argument(
+        "--face_tracking_hold_frames",
+        type=int,
+        default=10,
+        help="Maximum number of frames for which the face tracking layer may hold/predict a bbox when detection quality drops."
+    )
+    parser.add_argument(
+        "--face_difficulty_expand_ratio",
+        type=float,
+        default=1.20,
+        help="Extra crop expansion ratio used for high-difficulty face frames."
+    )
+    parser.add_argument(
+        "--face_rerun_difficulty_threshold",
+        type=float,
+        default=0.48,
+        help="Difficulty threshold above which the face crop layer switches to a more conservative rerun crop."
+    )
+    parser.add_argument(
+        "--face_alpha_blur_kernel",
+        type=int,
+        default=7,
+        help="Gaussian blur kernel size used when building face alpha."
+    )
+    parser.add_argument(
         "--fps",
         type=int,
         default=30,
@@ -796,6 +845,16 @@ if __name__ == '__main__':
         raise ValueError("bg_video_min_visible_count must be >= 1.")
     if not 0.0 <= float(args.bg_video_blend_strength) <= 1.0:
         raise ValueError("bg_video_blend_strength must be in [0, 1].")
+    if not 0.0 <= float(args.face_tracking_smooth_strength) < 1.0:
+        raise ValueError("face_tracking_smooth_strength must be in [0, 1).")
+    if args.face_tracking_max_scale_change <= 1.0:
+        raise ValueError("face_tracking_max_scale_change must be > 1.0.")
+    if args.face_tracking_hold_frames < 0:
+        raise ValueError("face_tracking_hold_frames must be >= 0.")
+    if args.face_difficulty_expand_ratio < 1.0:
+        raise ValueError("face_difficulty_expand_ratio must be >= 1.0.")
+    if args.face_alpha_blur_kernel <= 0 or args.face_alpha_blur_kernel % 2 == 0:
+        raise ValueError("face_alpha_blur_kernel must be a positive odd integer.")
     run_layout = None
     manifest_token = None
     if should_write_manifest(args):
@@ -933,6 +992,14 @@ if __name__ == '__main__':
                                             face_roi_conf_margin=args.face_roi_conf_margin,
                                             multistage_pose_extra_smooth=args.multistage_pose_extra_smooth,
                                             multistage_face_bbox_extra_smooth=args.multistage_face_bbox_extra_smooth,
+                                            face_analysis_mode=args.face_analysis_mode,
+                                            face_tracking_smooth_strength=args.face_tracking_smooth_strength,
+                                            face_tracking_max_scale_change=args.face_tracking_max_scale_change,
+                                            face_tracking_max_center_shift=args.face_tracking_max_center_shift,
+                                            face_tracking_hold_frames=args.face_tracking_hold_frames,
+                                            face_difficulty_expand_ratio=args.face_difficulty_expand_ratio,
+                                            face_rerun_difficulty_threshold=args.face_rerun_difficulty_threshold,
+                                            face_alpha_blur_kernel=args.face_alpha_blur_kernel,
                                             preprocess_runtime_profile=args.preprocess_runtime_profile,
                                             iterations=args.iterations,
                                             k=args.k,
@@ -1088,6 +1155,17 @@ if __name__ == '__main__':
             "multistage_pose_extra_smooth": args.multistage_pose_extra_smooth,
             "multistage_face_bbox_extra_smooth": args.multistage_face_bbox_extra_smooth,
             "stats": pipeline_outputs.get("multistage", {}),
+        }
+        metadata["processing"]["face_analysis"] = {
+            "face_analysis_mode": args.face_analysis_mode,
+            "face_tracking_smooth_strength": args.face_tracking_smooth_strength,
+            "face_tracking_max_scale_change": args.face_tracking_max_scale_change,
+            "face_tracking_max_center_shift": args.face_tracking_max_center_shift,
+            "face_tracking_hold_frames": args.face_tracking_hold_frames,
+            "face_difficulty_expand_ratio": args.face_difficulty_expand_ratio,
+            "face_rerun_difficulty_threshold": args.face_rerun_difficulty_threshold,
+            "face_alpha_blur_kernel": args.face_alpha_blur_kernel,
+            "stats": pipeline_outputs.get("face_analysis", {}),
         }
         metadata_path = write_preprocess_metadata(args.save_path, metadata)
         runtime_stats_path = None

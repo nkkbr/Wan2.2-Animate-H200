@@ -32,6 +32,8 @@
   - Step 02 的正式执行结论、多轮 benchmark 结果与冻结判断
 - `03-boundary-fusion-alpha-uncertainty-system-findings.md`
   - Step 03 的正式执行结论、多轮对照与 uncertainty 冻结判断
+- `04-complete-face-analysis-stack-findings.md`
+  - Step 04 的正式执行结论、face stack 指标与冻结判断
 
 
 ## 3. Benchmark 分层

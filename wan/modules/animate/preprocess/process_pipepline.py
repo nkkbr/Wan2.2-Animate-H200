@@ -114,6 +114,12 @@ from boundary_fusion import (
     make_uncertainty_heatmap_preview,
 )
 from background_clean_plate import build_clean_plate_background
+from face_analysis import (
+    make_face_landmark_overlay,
+    make_face_parsing_preview,
+    run_face_analysis,
+    write_face_analysis_artifacts,
+)
 from matting_adapter import make_matting_alpha_preview, run_matting_adapter
 from multistage_preprocess import (
     fuse_multistage_pose_metas,
@@ -284,6 +290,14 @@ class ProcessPipeline():
         face_roi_conf_margin=0.02,
         multistage_pose_extra_smooth=0.10,
         multistage_face_bbox_extra_smooth=0.08,
+        face_analysis_mode="heuristic",
+        face_tracking_smooth_strength=0.90,
+        face_tracking_max_scale_change=1.08,
+        face_tracking_max_center_shift=0.016,
+        face_tracking_hold_frames=10,
+        face_difficulty_expand_ratio=1.20,
+        face_rerun_difficulty_threshold=0.48,
+        face_alpha_blur_kernel=7,
         preprocess_runtime_profile="legacy_safe",
         iterations=3,
         k=7,
@@ -894,6 +908,34 @@ class ProcessPipeline():
             occlusion_band_masks = boundary_fusion["occlusion_band"].astype(np.float32)
             uncertainty_map_masks = boundary_fusion["uncertainty_map"].astype(np.float32)
             background_keep_prior_masks = boundary_fusion["background_keep_prior"].astype(np.float32)
+            face_analysis = None
+            if face_analysis_mode != "none":
+                face_analysis_start = time.perf_counter()
+                face_analysis = run_face_analysis(
+                    export_frames=np.stack(export_frames).astype(np.uint8),
+                    face_source_frames=np.stack(face_source_frames).astype(np.uint8),
+                    pose_metas=tpl_pose_metas,
+                    face_bboxes=face_bboxes,
+                    export_shape=(height, width),
+                    analysis_shape=(analysis_height, analysis_width),
+                    face_source_shape=face_source_shape,
+                    hard_foreground=hard_foreground_masks,
+                    soft_alpha=soft_alpha_masks,
+                    occlusion_band=occlusion_band_masks,
+                    uncertainty_map=uncertainty_map_masks,
+                    conf_thresh=face_conf_thresh,
+                    tracking_smooth_strength=face_tracking_smooth_strength,
+                    tracking_max_scale_change=face_tracking_max_scale_change,
+                    tracking_max_center_shift=face_tracking_max_center_shift,
+                    tracking_hold_frames=face_tracking_hold_frames,
+                    difficulty_expand_ratio=face_difficulty_expand_ratio,
+                    rerun_difficulty_threshold=face_rerun_difficulty_threshold,
+                    alpha_blur_kernel=face_alpha_blur_kernel,
+                )
+                face_images = np.asarray(face_analysis["face_images"], dtype=np.uint8)
+                face_bboxes = [list(map(int, bbox)) for bbox in face_analysis["tracked_bboxes_export"]]
+                face_bbox_curve = face_analysis["bbox_curve"]
+                runtime_stage_seconds["face_analysis"] = time.perf_counter() - face_analysis_start
             background_start = time.perf_counter()
             bg_images, background_debug = build_clean_plate_background(
                 np.stack(export_frames).astype(np.uint8),
@@ -920,10 +962,22 @@ class ProcessPipeline():
                 "pose_conf_curve": "pose_conf_curve.json",
                 "mask_stats": "mask_stats.json",
             }
+            face_artifacts = {}
+            if face_analysis is not None:
+                face_artifacts = write_face_analysis_artifacts(output_path, face_analysis, fps, write_json_fn=write_curve_json)
+                qa_outputs.update({
+                    "face_landmarks": face_artifacts["face_landmarks"]["path"],
+                    "face_pose": face_artifacts["face_pose"]["path"],
+                    "face_expression": face_artifacts["face_expression"]["path"],
+                    "face_alpha": face_artifacts["face_alpha"]["path"],
+                    "face_uncertainty": face_artifacts["face_uncertainty"]["path"],
+                    "face_parsing": face_artifacts["face_parsing"]["path"],
+                })
             runtime_stage_seconds["diagnostic_artifacts"] = time.perf_counter() - diagnostics_start
             if export_qa_visuals:
                 qa_start = time.perf_counter()
-                face_bbox_overlay = make_face_bbox_overlay(np.stack(analysis_frames).astype(np.uint8), face_bboxes, face_bbox_curve)
+                face_bbox_overlay_frames = np.stack(export_frames).astype(np.uint8) if face_analysis is not None else np.stack(analysis_frames).astype(np.uint8)
+                face_bbox_overlay = make_face_bbox_overlay(face_bbox_overlay_frames, face_bboxes, face_bbox_curve)
                 pose_overlay = make_pose_overlay(np.stack(export_frames).astype(np.uint8), tpl_pose_metas)
                 qa_face_overlay = write_rgb_artifact(
                     frames=face_bbox_overlay,
@@ -964,6 +1018,43 @@ class ProcessPipeline():
                     "sam_prompts_overlay": qa_prompt_overlay["path"],
                     "sam_prompt_keyframes": prompt_keyframes["path"],
                 }
+                if face_analysis is not None:
+                    qa_face_landmark_overlay = write_rgb_artifact(
+                        frames=make_face_landmark_overlay(np.stack(export_frames).astype(np.uint8), face_bbox_curve, face_analysis["landmarks_json"], face_analysis["head_pose_json"]),
+                        output_root=output_path,
+                        stem="face_landmark_overlay",
+                        artifact_format="mp4",
+                        fps=fps,
+                    )
+                    qa_face_alpha = write_person_mask_artifact(
+                        mask_frames=face_analysis["face_alpha"],
+                        output_root=output_path,
+                        stem="face_alpha_overlay",
+                        artifact_format="mp4",
+                        fps=fps,
+                        mask_semantics="face_alpha",
+                    )
+                    qa_face_uncertainty = write_person_mask_artifact(
+                        mask_frames=face_analysis["face_uncertainty"],
+                        output_root=output_path,
+                        stem="face_uncertainty_overlay",
+                        artifact_format="mp4",
+                        fps=fps,
+                        mask_semantics="face_uncertainty",
+                    )
+                    qa_face_parsing = write_rgb_artifact(
+                        frames=make_face_parsing_preview(face_analysis["face_parsing"]),
+                        output_root=output_path,
+                        stem="face_parsing_overlay",
+                        artifact_format="mp4",
+                        fps=fps,
+                    )
+                    qa_outputs.update({
+                        "face_landmark_overlay": qa_face_landmark_overlay["path"],
+                        "face_alpha_overlay": qa_face_alpha["path"],
+                        "face_uncertainty_overlay": qa_face_uncertainty["path"],
+                        "face_parsing_overlay": qa_face_parsing["path"],
+                    })
                 if soft_band_masks is not None:
                     qa_soft_band_overlay = write_person_mask_artifact(
                         mask_frames=soft_band_masks,
@@ -1222,6 +1313,8 @@ class ProcessPipeline():
                     "resized_width": int(width),
                 },
             }
+            if face_artifacts:
+                src_files.update(face_artifacts)
             src_files["hard_foreground"] = {
                 **src_files["person_mask"],
                 "mask_semantics": HARD_FOREGROUND_SEMANTICS,
@@ -1341,8 +1434,14 @@ class ProcessPipeline():
                 "mode": background_debug.get("background_mode"),
                 "stats": background_debug.get("stats", {}),
             }
+            runtime_stats["face_analysis"] = {
+                "mode": face_analysis_mode,
+                "stats": {} if face_analysis is None else face_analysis["stats"],
+            }
             runtime_stats["multistage"] = multistage_stats
             runtime_metrics["background_mode"] = background_debug.get("background_mode")
+            runtime_metrics["face_tracking_center_jitter_mean"] = None if face_analysis is None else float(face_analysis["stats"].get("center_jitter_mean", 0.0))
+            runtime_metrics["face_landmark_confidence_mean"] = None if face_analysis is None else float(face_analysis["stats"].get("landmark_confidence_mean", 0.0))
             runtime_metrics["person_roi_coverage_ratio"] = float(
                 multistage_stats["person_roi_analysis"].get("proposal_stats", {}).get("coverage_ratio", 0.0)
             )
@@ -1374,6 +1473,10 @@ class ProcessPipeline():
                 "background": {
                     "mode": background_debug.get("background_mode"),
                     "stats": background_debug.get("stats", {}),
+                },
+                "face_analysis": {
+                    "mode": face_analysis_mode,
+                    "stats": {} if face_analysis is None else face_analysis["stats"],
                 },
                 "multistage": multistage_stats,
                 "sam_runtime": dict(self.sam_runtime_config),
