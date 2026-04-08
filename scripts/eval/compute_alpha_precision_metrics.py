@@ -1,10 +1,17 @@
 #!/usr/bin/env python
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from wan.utils.media_io import load_person_mask_artifact
 
 
 def _read_json(path: Path):
@@ -58,7 +65,7 @@ def _load_optional_mask(preprocess_dir: Path, metadata: dict, key: str):
     if key not in metadata["src_files"]:
         return None
     artifact = metadata["src_files"][key]
-    return _load_npz_volume(preprocess_dir / artifact["path"]).astype(np.float32)
+    return load_person_mask_artifact(preprocess_dir / artifact["path"], artifact.get("format")).astype(np.float32)
 
 
 def main():
@@ -73,11 +80,21 @@ def main():
     preprocess_dir = Path(args.prediction_preprocess_dir)
     metadata = _read_json(preprocess_dir / "metadata.json")
 
-    pred_hard = _load_npz_volume(preprocess_dir / metadata["src_files"]["person_mask"]["path"]).astype(np.float32)
-    pred_alpha = _load_npz_volume(preprocess_dir / metadata["src_files"]["soft_alpha"]["path"]).astype(np.float32)
-    pred_trimap = _load_optional_mask(preprocess_dir, metadata, "trimap_v2")
+    pred_hard = load_person_mask_artifact(
+        preprocess_dir / metadata["src_files"]["person_mask"]["path"],
+        metadata["src_files"]["person_mask"].get("format"),
+    ).astype(np.float32)
+    pred_alpha = load_person_mask_artifact(
+        preprocess_dir / metadata["src_files"]["soft_alpha"]["path"],
+        metadata["src_files"]["soft_alpha"].get("format"),
+    ).astype(np.float32)
+    pred_trimap = _load_optional_mask(preprocess_dir, metadata, "trimap_unknown")
+    if pred_trimap is None:
+        pred_trimap = _load_optional_mask(preprocess_dir, metadata, "trimap_v2")
     pred_fine_boundary = _load_optional_mask(preprocess_dir, metadata, "fine_boundary_mask")
-    pred_hair_edge = _load_optional_mask(preprocess_dir, metadata, "hair_edge_mask")
+    pred_hair_edge = _load_optional_mask(preprocess_dir, metadata, "hair_alpha")
+    if pred_hair_edge is None:
+        pred_hair_edge = _load_optional_mask(preprocess_dir, metadata, "hair_edge_mask")
     pred_alpha_uncertainty = _load_optional_mask(preprocess_dir, metadata, "alpha_uncertainty_v2")
 
     records = []
@@ -117,7 +134,10 @@ def main():
 
             trimap_unknown_iou = None
             if pred_trimap is not None:
-                pred_unknown = np.logical_and(pred_trimap[preprocess_idx] > 0.25, pred_trimap[preprocess_idx] < 0.75)
+                if str(metadata["src_files"].get("trimap_unknown", {}).get("mask_semantics", "")) == "trimap_unknown":
+                    pred_unknown = pred_trimap[preprocess_idx] > 0.10
+                else:
+                    pred_unknown = np.logical_and(pred_trimap[preprocess_idx] > 0.25, pred_trimap[preprocess_idx] < 0.75)
                 trimap_unknown_iou = _iou(pred_unknown, trimap_label == 128)
                 trimap_unknown_iou_values.append(trimap_unknown_iou)
 

@@ -1,0 +1,40 @@
+{
+  "schema_name": "optimization5_edge_label_reviewed_v1",
+  "required_top_level_fields": [
+    "schema_version",
+    "case_id",
+    "source_video_path",
+    "label_source_preprocess_dir",
+    "label_status",
+    "review_metadata",
+    "preprocess_frame_index",
+    "source_frame_index",
+    "export_shape",
+    "difficulty_score",
+    "annotations",
+    "category_presence"
+  ],
+  "required_annotations": {
+    "hard_foreground": "grayscale png",
+    "soft_alpha": "grayscale png",
+    "trimap": "grayscale png",
+    "boundary_mask": "grayscale png",
+    "occlusion_band": "grayscale png",
+    "uncertainty_map": "grayscale png",
+    "boundary_type_map": "indexed grayscale png"
+  },
+  "boundary_type_values": {
+    "0": "non-boundary",
+    "1": "face",
+    "2": "hair",
+    "3": "hand",
+    "4": "cloth",
+    "5": "occluded"
+  },
+  "review_metadata_fields": [
+    "reviewer",
+    "review_status",
+    "review_mode",
+    "review_notes"
+  ]
+}

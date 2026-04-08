@@ -58,26 +58,32 @@ def main():
         parsing_hand_prior=hand_prior,
         parsing_occlusion_prior=occlusion_prior,
         parsing_part_foreground_prior=part_foreground,
-        mode="high_precision_v2",
+        mode="production_v1",
     )
 
     assert result["soft_alpha"].shape == hard_mask.shape
     assert result["alpha_v2"].shape == hard_mask.shape
     assert result["trimap_v2"].shape == hard_mask.shape
     assert result["alpha_uncertainty_v2"].shape == hard_mask.shape
+    assert result["trimap_unknown"].shape == hard_mask.shape
     assert result["fine_boundary_mask"].shape == hard_mask.shape
+    assert result["hair_alpha"].shape == hard_mask.shape
     assert result["hair_edge_mask"].shape == hard_mask.shape
     assert result["alpha_confidence"].shape == hard_mask.shape
     assert result["refined_hard_foreground"].shape == hard_mask.shape
     assert float(result["fine_boundary_mask"].mean()) > 0.0
     assert float(result["hair_edge_mask"].mean()) > 0.0
+    assert float(result["trimap_unknown"].mean()) > 0.0
+    assert float(result["hair_alpha"].mean()) > 0.0
     assert float(result["alpha_confidence"].mean()) > 0.0
     assert np.isfinite(result["soft_alpha"]).all()
     assert np.isfinite(result["alpha_uncertainty_v2"]).all()
     print(json.dumps({
         "soft_alpha_mean": float(result["soft_alpha"].mean()),
         "alpha_uncertainty_v2_mean": float(result["alpha_uncertainty_v2"].mean()),
+        "trimap_unknown_mean": float(result["trimap_unknown"].mean()),
         "fine_boundary_mask_mean": float(result["fine_boundary_mask"].mean()),
+        "hair_alpha_mean": float(result["hair_alpha"].mean()),
         "hair_edge_mask_mean": float(result["hair_edge_mask"].mean()),
         "status": "PASS",
     }, ensure_ascii=False))

@@ -1,7 +1,12 @@
 import cv2
 import numpy as np
 
-from alpha_refinement import make_binary_mask_preview, make_trimap_preview, run_alpha_refinement_v2
+from alpha_refinement import (
+    make_binary_mask_preview,
+    make_trimap_preview,
+    run_alpha_refinement_v2,
+    run_alpha_refinement_v3,
+)
 
 
 def _mean_color(frame: np.ndarray, mask: np.ndarray, fallback: np.ndarray) -> np.ndarray:
@@ -144,6 +149,10 @@ def run_matting_adapter(
     alpha_v2_hard_threshold: float = 0.68,
     alpha_v2_bilateral_sigma_color: float = 0.12,
     alpha_v2_bilateral_sigma_space: float = 5.0,
+    alpha_v3_detail_boost: float = 0.24,
+    alpha_v3_color_mix: float = 0.42,
+    alpha_v3_active_blend: float = 0.55,
+    alpha_v3_delta_clip: float = 0.10,
 ) -> dict:
     frames = np.asarray(frames, dtype=np.uint8)
     hard_mask = np.asarray(hard_mask, dtype=np.float32)
@@ -168,7 +177,7 @@ def run_matting_adapter(
                 "uncertainty_prior_mean": 0.0,
             },
         }
-    if mode not in {"heuristic", "high_precision_v2"}:
+    if mode not in {"heuristic", "high_precision_v2", "production_v1"}:
         raise ValueError(f"Unsupported matting adapter mode: {mode}")
 
     if soft_band is None:
@@ -236,7 +245,7 @@ def run_matting_adapter(
         0.0,
         1.0,
     ).astype(np.float32)
-    return {
+    output = {
         "mode": mode,
         "soft_alpha": active_soft_alpha,
         "unknown_region": heuristic["unknown_region"].astype(np.float32),
@@ -263,6 +272,43 @@ def run_matting_adapter(
             "active_soft_alpha_delta_mean": float(np.abs(active_soft_alpha - legacy_soft_alpha).mean()),
         },
     }
+    if mode != "production_v1":
+        return output
+
+    alpha_v3 = run_alpha_refinement_v3(
+        frames=frames,
+        legacy_soft_alpha=legacy_soft_alpha,
+        alpha_v2=alpha_v2["alpha_v2"],
+        trimap_v2=alpha_v2["trimap_v2"],
+        alpha_uncertainty_v2=alpha_v2["alpha_uncertainty_v2"],
+        fine_boundary_mask=alpha_v2["fine_boundary_mask"],
+        hair_edge_mask=alpha_v2["hair_edge_mask"],
+        refined_hard_foreground=alpha_v2["refined_hard_foreground"],
+        support_region=heuristic["support_region"],
+        unknown_region=heuristic["unknown_region"],
+        head_prior=parsing_head_prior,
+        hand_prior=parsing_hand_prior,
+        occlusion_prior=parsing_occlusion_prior,
+        detail_boost=alpha_v3_detail_boost,
+        color_mix=alpha_v3_color_mix,
+        active_blend=alpha_v3_active_blend,
+        delta_clip=alpha_v3_delta_clip,
+    )
+    output.update({
+        "soft_alpha": alpha_v3["soft_alpha"].astype(np.float32),
+        "trimap_unknown": alpha_v3["trimap_unknown"].astype(np.float32),
+        "hair_alpha": alpha_v3["hair_alpha"].astype(np.float32),
+        "alpha_confidence": alpha_v3["alpha_confidence"].astype(np.float32),
+        "alpha_source_provenance": alpha_v3["alpha_source_provenance"].astype(np.float32),
+        "stats": {
+            **output["stats"],
+            **alpha_v3["stats"],
+            "mode": mode,
+            "active_soft_alpha_mean": float(alpha_v3["soft_alpha"].mean()),
+            "active_soft_alpha_delta_mean": float(np.abs(alpha_v3["soft_alpha"] - legacy_soft_alpha).mean()),
+        },
+    })
+    return output
 
 
 def make_matting_alpha_preview(soft_alpha: np.ndarray) -> np.ndarray:

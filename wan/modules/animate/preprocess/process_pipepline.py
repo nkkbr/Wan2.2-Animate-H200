@@ -105,16 +105,21 @@ from wan.utils.animate_contract import (
     SOFT_ALPHA_SEMANTICS,
     ALPHA_V2_SEMANTICS,
     TRIMAP_V2_SEMANTICS,
+    TRIMAP_UNKNOWN_SEMANTICS,
     ALPHA_UNCERTAINTY_V2_SEMANTICS,
     FINE_BOUNDARY_MASK_SEMANTICS,
+    HAIR_ALPHA_SEMANTICS,
     HAIR_EDGE_MASK_SEMANTICS,
     ALPHA_CONFIDENCE_SEMANTICS,
     ALPHA_SOURCE_PROVENANCE_SEMANTICS,
     FACE_BOUNDARY_SEMANTICS,
+    FOREGROUND_ALPHA_SEMANTICS,
+    FOREGROUND_CONFIDENCE_SEMANTICS,
     HAIR_BOUNDARY_SEMANTICS,
     HAND_BOUNDARY_SEMANTICS,
     CLOTH_BOUNDARY_SEMANTICS,
     OCCLUDED_BOUNDARY_SEMANTICS,
+    COMPOSITE_ROI_MASK_SEMANTICS,
     SOFT_BAND_SEMANTICS,
     UNRESOLVED_REGION_SEMANTICS,
     UNCERTAINTY_MAP_SEMANTICS,
@@ -282,6 +287,10 @@ class ProcessPipeline():
         alpha_v2_hard_threshold=0.68,
         alpha_v2_bilateral_sigma_color=0.12,
         alpha_v2_bilateral_sigma_space=5.0,
+        alpha_v3_detail_boost=0.24,
+        alpha_v3_color_mix=0.42,
+        alpha_v3_active_blend=0.55,
+        alpha_v3_delta_clip=0.10,
         bg_inpaint_mode="none",
         bg_inpaint_method="telea",
         bg_inpaint_mask_expand=16,
@@ -947,6 +956,10 @@ class ProcessPipeline():
                 alpha_v2_hard_threshold=alpha_v2_hard_threshold,
                 alpha_v2_bilateral_sigma_color=alpha_v2_bilateral_sigma_color,
                 alpha_v2_bilateral_sigma_space=alpha_v2_bilateral_sigma_space,
+                alpha_v3_detail_boost=alpha_v3_detail_boost,
+                alpha_v3_color_mix=alpha_v3_color_mix,
+                alpha_v3_active_blend=alpha_v3_active_blend,
+                alpha_v3_delta_clip=alpha_v3_delta_clip,
             )
             runtime_stage_seconds["matting_adapter"] = time.perf_counter() - matting_start
             fusion_start = time.perf_counter()
@@ -968,9 +981,17 @@ class ProcessPipeline():
                 np.asarray(matting_output["trimap_v2"], dtype=np.float32)
                 if matting_output.get("trimap_v2") is not None else None
             )
+            trimap_unknown_masks = (
+                np.asarray(matting_output["trimap_unknown"], dtype=np.float32)
+                if matting_output.get("trimap_unknown") is not None else None
+            )
             alpha_v2_masks = (
                 np.asarray(matting_output["alpha_v2"], dtype=np.float32)
                 if matting_output.get("alpha_v2") is not None else None
+            )
+            hair_alpha_masks = (
+                np.asarray(matting_output["hair_alpha"], dtype=np.float32)
+                if matting_output.get("hair_alpha") is not None else None
             )
             alpha_uncertainty_v2_masks = (
                 np.asarray(matting_output["alpha_uncertainty_v2"], dtype=np.float32)
@@ -1336,6 +1357,15 @@ class ProcessPipeline():
                         fps=fps,
                     )
                     qa_outputs["trimap_v2_preview"] = qa_trimap_v2["path"]
+                if trimap_unknown_masks is not None:
+                    qa_trimap_unknown = write_rgb_artifact(
+                        frames=make_alpha_mask_preview(trimap_unknown_masks),
+                        output_root=output_path,
+                        stem="trimap_unknown_preview",
+                        artifact_format="mp4",
+                        fps=fps,
+                    )
+                    qa_outputs["trimap_unknown_preview"] = qa_trimap_unknown["path"]
                 if alpha_v2_masks is not None:
                     qa_alpha_v2 = write_rgb_artifact(
                         frames=make_matting_alpha_preview(alpha_v2_masks),
@@ -1345,6 +1375,15 @@ class ProcessPipeline():
                         fps=fps,
                     )
                     qa_outputs["alpha_v2_preview"] = qa_alpha_v2["path"]
+                if hair_alpha_masks is not None:
+                    qa_hair_alpha = write_rgb_artifact(
+                        frames=make_matting_alpha_preview(hair_alpha_masks),
+                        output_root=output_path,
+                        stem="hair_alpha_preview",
+                        artifact_format="mp4",
+                        fps=fps,
+                    )
+                    qa_outputs["hair_alpha_preview"] = qa_hair_alpha["path"]
                 if alpha_uncertainty_v2_masks is not None:
                     qa_alpha_uncertainty_v2 = write_person_mask_artifact(
                         mask_frames=alpha_uncertainty_v2_masks,
@@ -1526,6 +1565,33 @@ class ProcessPipeline():
                 runtime_stage_seconds["qa_artifacts"] = time.perf_counter() - qa_start
 
             write_start = time.perf_counter()
+            export_frames_np = np.stack(export_frames).astype(np.uint8)
+            foreground_rgb_frames = np.clip(
+                np.rint(export_frames_np.astype(np.float32) * soft_alpha_masks[..., None]),
+                0,
+                255,
+            ).astype(np.uint8)
+            if alpha_confidence_masks is not None:
+                foreground_confidence_masks = np.clip(alpha_confidence_masks, 0.0, 1.0).astype(np.float32)
+            else:
+                foreground_confidence_masks = np.clip(1.0 - uncertainty_map_masks, 0.0, 1.0).astype(np.float32)
+            composite_roi_components = [
+                np.clip(boundary_band_masks, 0.0, 1.0).astype(np.float32),
+                np.clip(0.85 * occlusion_band_masks, 0.0, 1.0).astype(np.float32),
+                np.clip(0.75 * uncertainty_map_masks, 0.0, 1.0).astype(np.float32),
+                np.clip(0.80 * background_debug["unresolved_region"].astype(np.float32), 0.0, 1.0),
+            ]
+            for semantic_name, weight in (
+                ("face_boundary", 0.35),
+                ("hair_boundary", 0.55),
+                ("hand_boundary", 0.40),
+                ("cloth_boundary", 0.25),
+                ("occluded_boundary", 0.45),
+            ):
+                semantic_frames = semantic_boundary_maps.get(semantic_name)
+                if semantic_frames is not None:
+                    composite_roi_components.append(np.clip(weight * np.asarray(semantic_frames, dtype=np.float32), 0.0, 1.0))
+            composite_roi_mask = np.clip(np.maximum.reduce(composite_roi_components), 0.0, 1.0).astype(np.float32)
             src_files = {
                 "pose": write_rgb_artifact(
                     frames=cond_images,
@@ -1546,6 +1612,13 @@ class ProcessPipeline():
                     output_root=output_path,
                     stem="src_bg",
                     artifact_format=self._artifact_format(save_format, lossless_intermediate, "background"),
+                    fps=fps,
+                ),
+                "foreground_rgb": write_rgb_artifact(
+                    frames=foreground_rgb_frames,
+                    output_root=output_path,
+                    stem="src_foreground_rgb",
+                    artifact_format=self._artifact_format(save_format, lossless_intermediate, "foreground_rgb"),
                     fps=fps,
                 ),
                 "person_mask": write_person_mask_artifact(
@@ -1685,6 +1758,15 @@ class ProcessPipeline():
                     fps=fps,
                     mask_semantics=TRIMAP_V2_SEMANTICS,
                 )
+            if trimap_unknown_masks is not None:
+                src_files["trimap_unknown"] = write_person_mask_artifact(
+                    mask_frames=trimap_unknown_masks,
+                    output_root=output_path,
+                    stem="src_trimap_unknown",
+                    artifact_format=self._artifact_format(save_format, lossless_intermediate, "trimap_unknown", is_mask=True),
+                    fps=fps,
+                    mask_semantics=TRIMAP_UNKNOWN_SEMANTICS,
+                )
             if alpha_uncertainty_v2_masks is not None:
                 src_files["alpha_uncertainty_v2"] = write_person_mask_artifact(
                     mask_frames=alpha_uncertainty_v2_masks,
@@ -1711,6 +1793,15 @@ class ProcessPipeline():
                     artifact_format=self._artifact_format(save_format, lossless_intermediate, "hair_edge_mask", is_mask=True),
                     fps=fps,
                     mask_semantics=HAIR_EDGE_MASK_SEMANTICS,
+                )
+            if hair_alpha_masks is not None:
+                src_files["hair_alpha"] = write_person_mask_artifact(
+                    mask_frames=hair_alpha_masks,
+                    output_root=output_path,
+                    stem="src_hair_alpha",
+                    artifact_format=self._artifact_format(save_format, lossless_intermediate, "hair_alpha", is_mask=True),
+                    fps=fps,
+                    mask_semantics=HAIR_ALPHA_SEMANTICS,
                 )
             semantic_boundary_semantics = {
                 "face_boundary": FACE_BOUNDARY_SEMANTICS,
@@ -1762,6 +1853,22 @@ class ProcessPipeline():
                     fps=fps,
                     mask_semantics=ALPHA_SOURCE_PROVENANCE_SEMANTICS,
                 )
+            src_files["foreground_alpha"] = {
+                **src_files["soft_alpha"],
+                "mask_semantics": FOREGROUND_ALPHA_SEMANTICS,
+            }
+            src_files["foreground_confidence"] = write_person_mask_artifact(
+                mask_frames=foreground_confidence_masks,
+                output_root=output_path,
+                stem="src_foreground_confidence",
+                artifact_format=self._artifact_format(save_format, lossless_intermediate, "foreground_confidence", is_mask=True),
+                fps=fps,
+                mask_semantics=FOREGROUND_CONFIDENCE_SEMANTICS,
+            )
+            src_files["background_rgb"] = {
+                **src_files["background"],
+                "artifact_role": "background_rgb",
+            }
             src_files["background_keep_prior"] = write_person_mask_artifact(
                 mask_frames=background_keep_prior_masks,
                 output_root=output_path,
@@ -1835,6 +1942,22 @@ class ProcessPipeline():
                     "1.0": "local_temporal",
                 },
             })
+            src_files["background_visible_support"] = {
+                **src_files["visible_support"],
+                "mask_semantics": BACKGROUND_VISIBLE_SUPPORT_SEMANTICS,
+            }
+            src_files["background_unresolved"] = {
+                **src_files["unresolved_region"],
+                "mask_semantics": UNRESOLVED_REGION_SEMANTICS,
+            }
+            src_files["composite_roi_mask"] = write_person_mask_artifact(
+                mask_frames=composite_roi_mask,
+                output_root=output_path,
+                stem="src_composite_roi_mask",
+                artifact_format=self._artifact_format(save_format, lossless_intermediate, "composite_roi_mask", is_mask=True),
+                fps=fps,
+                mask_semantics=COMPOSITE_ROI_MASK_SEMANTICS,
+            )
             src_files["background"]["background_mode"] = background_debug["background_mode"]
             runtime_stage_seconds["write_outputs"] = time.perf_counter() - write_start
             runtime_stage_seconds["total"] = time.perf_counter() - overall_start

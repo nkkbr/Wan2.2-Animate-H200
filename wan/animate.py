@@ -63,6 +63,7 @@ from .utils.guidance import combine_animate_guidance_predictions
 from .utils.media_io import load_mask_artifact, load_person_mask_artifact, load_rgb_artifact, write_person_mask_artifact
 from .utils.replacement_masks import compose_background_keep_mask, derive_replacement_regions, resize_mask_volume
 from .utils.rich_conditioning import (
+    build_core_condition_rgb,
     build_boundary_conditioning_maps,
     build_face_conditioning_maps,
     load_json_if_exists,
@@ -549,6 +550,10 @@ class WanAnimate:
         hand_boundary_images,
         cloth_boundary_images,
         occluded_boundary_images,
+        foreground_rgb_images,
+        foreground_alpha_images,
+        foreground_confidence_images,
+        composite_roi_mask_images,
         face_confidence_images,
         face_preserve_images,
         conditioning_mode,
@@ -632,6 +637,22 @@ class WanAnimate:
             torch.as_tensor(np.asarray(occluded_boundary_images), dtype=torch.float32)
             if occluded_boundary_images is not None else None
         )
+        foreground_rgb = (
+            torch.as_tensor(np.asarray(foreground_rgb_images), dtype=torch.float32)
+            if foreground_rgb_images is not None else None
+        )
+        foreground_alpha = (
+            torch.as_tensor(np.asarray(foreground_alpha_images), dtype=torch.float32)
+            if foreground_alpha_images is not None else None
+        )
+        foreground_confidence = (
+            torch.as_tensor(np.asarray(foreground_confidence_images), dtype=torch.float32)
+            if foreground_confidence_images is not None else None
+        )
+        composite_roi_mask = (
+            torch.as_tensor(np.asarray(composite_roi_mask_images), dtype=torch.float32)
+            if composite_roi_mask_images is not None else None
+        )
         boundary_conditioning = build_boundary_conditioning_maps(
             soft_alpha=np.asarray(soft_alpha_images) if soft_alpha_images is not None else None,
             alpha_v2=np.asarray(alpha_v2_images) if alpha_v2_images is not None else None,
@@ -676,9 +697,23 @@ class WanAnimate:
             detail_release_map = None
             trimap_unknown_map = None
             edge_detail_map = None
+        if conditioning_mode == "decoupled_v1":
+            if composite_roi_mask is not None:
+                decoupled_release_hint = torch.clamp(0.25 * composite_roi_mask, 0.0, 1.0)
+                detail_release_map = (
+                    torch.maximum(detail_release_map, decoupled_release_hint)
+                    if detail_release_map is not None else decoupled_release_hint
+                )
+                if trimap_unknown_map is None:
+                    trimap_unknown_map = torch.clamp(0.35 * composite_roi_mask, 0.0, 1.0)
+                if edge_detail_map is None:
+                    edge_detail_map = torch.clamp(0.20 * composite_roi_mask, 0.0, 1.0)
         background_keep = compose_background_keep_mask(
             hard_foreground,
             soft_band=boundary_band,
+            foreground_alpha=foreground_alpha,
+            foreground_confidence=foreground_confidence,
+            composite_roi_mask=composite_roi_mask,
             soft_alpha=soft_alpha,
             detail_release_map=detail_release_map,
             trimap_unknown_map=trimap_unknown_map,
@@ -700,6 +735,7 @@ class WanAnimate:
             structure_guard_strength=structure_guard_strength,
             mode=mask_mode,
             boundary_strength=boundary_strength,
+            decoupled_release_strength=boundary_strength,
         )
         background_keep_latent = resize_mask_volume(
             background_keep,
@@ -753,6 +789,10 @@ class WanAnimate:
             "hand_boundary": hand_boundary,
             "cloth_boundary": cloth_boundary,
             "occluded_boundary": occluded_boundary,
+            "foreground_rgb": foreground_rgb,
+            "foreground_alpha": foreground_alpha,
+            "foreground_confidence": foreground_confidence,
+            "composite_roi_mask": composite_roi_mask,
             "boundary_conditioning_summary": boundary_conditioning["summary"],
             "conditioning_mode": conditioning_mode,
             "structure_guard_strength": float(structure_guard_strength),
@@ -792,6 +832,12 @@ class WanAnimate:
             mask_artifacts["boundary_band"] = replacement_masks["soft_band"][:real_frame_len].cpu().numpy()
         if replacement_masks["soft_alpha"] is not None:
             mask_artifacts["soft_alpha"] = replacement_masks["soft_alpha"][:real_frame_len].cpu().numpy()
+        if replacement_masks.get("foreground_alpha") is not None:
+            mask_artifacts["foreground_alpha"] = replacement_masks["foreground_alpha"][:real_frame_len].cpu().numpy()
+        if replacement_masks.get("foreground_confidence") is not None:
+            mask_artifacts["foreground_confidence"] = replacement_masks["foreground_confidence"][:real_frame_len].cpu().numpy()
+        if replacement_masks.get("composite_roi_mask") is not None:
+            mask_artifacts["composite_roi_mask"] = replacement_masks["composite_roi_mask"][:real_frame_len].cpu().numpy()
         if replacement_masks["background_keep_prior"] is not None:
             mask_artifacts["background_keep_prior"] = replacement_masks["background_keep_prior"][:real_frame_len].cpu().numpy()
         if replacement_masks["visible_support"] is not None:
@@ -1080,13 +1126,13 @@ class WanAnimate:
             raise ValueError(
                 f"temporal_handoff_strength must be in [0, 1]. Got {temporal_handoff_strength}."
             )
-        if replacement_conditioning_mode not in {"legacy", "rich", "rich_v1", "semantic_v1"}:
+        if replacement_conditioning_mode not in {"legacy", "rich", "rich_v1", "semantic_v1", "decoupled_v1", "core_rich_v1"}:
             raise ValueError(
                 f"Unsupported replacement_conditioning_mode: {replacement_conditioning_mode}"
             )
         if replacement_conditioning_mode == "rich":
             replacement_conditioning_mode = "rich_v1"
-        if boundary_refine_mode not in {"none", "deterministic", "v2", "roi_v1", "semantic_v1", "local_edge_v1"}:
+        if boundary_refine_mode not in {"none", "deterministic", "v2", "roi_v1", "semantic_v1", "semantic_experts_v1", "local_edge_v1", "roi_gen_v1"}:
             raise ValueError(f"Unsupported boundary_refine_mode: {boundary_refine_mode}")
         if not 0.0 <= float(boundary_refine_strength) <= 1.0:
             raise ValueError(f"boundary_refine_strength must be in [0, 1]. Got {boundary_refine_strength}.")
@@ -1187,6 +1233,10 @@ class WanAnimate:
         hand_boundary_images = None
         cloth_boundary_images = None
         occluded_boundary_images = None
+        foreground_rgb_images = None
+        foreground_alpha_images = None
+        foreground_confidence_images = None
+        composite_roi_mask_images = None
         face_alpha_conditioning_images = None
         face_uncertainty_conditioning_images = None
         face_bbox_curve_data = None
@@ -1202,6 +1252,21 @@ class WanAnimate:
             )
             if "hard_foreground" in artifacts:
                 hard_foreground_images = load_mask_artifact(artifacts["hard_foreground"]["path"], artifacts["hard_foreground"].get("format"))
+            if "foreground_rgb" in artifacts:
+                foreground_rgb_images = load_rgb_artifact(
+                    artifacts["foreground_rgb"]["path"],
+                    artifacts["foreground_rgb"].get("format"),
+                )
+            if "foreground_alpha" in artifacts:
+                foreground_alpha_images = load_mask_artifact(
+                    artifacts["foreground_alpha"]["path"],
+                    artifacts["foreground_alpha"].get("format"),
+                )
+            if "foreground_confidence" in artifacts:
+                foreground_confidence_images = load_mask_artifact(
+                    artifacts["foreground_confidence"]["path"],
+                    artifacts["foreground_confidence"].get("format"),
+                )
             if "soft_band" in artifacts:
                 soft_band_images = load_mask_artifact(artifacts["soft_band"]["path"], artifacts["soft_band"].get("format"))
             if "boundary_band" in artifacts:
@@ -1232,6 +1297,11 @@ class WanAnimate:
                 background_source_provenance_images = load_mask_artifact(
                     artifacts["background_source_provenance"]["path"],
                     artifacts["background_source_provenance"].get("format"),
+                )
+            if "composite_roi_mask" in artifacts:
+                composite_roi_mask_images = load_mask_artifact(
+                    artifacts["composite_roi_mask"]["path"],
+                    artifacts["composite_roi_mask"].get("format"),
                 )
             if "occlusion_band" in artifacts:
                 occlusion_band_images = load_mask_artifact(
@@ -1348,11 +1418,21 @@ class WanAnimate:
                 hand_boundary_images=hand_boundary_images,
                 cloth_boundary_images=cloth_boundary_images,
                 occluded_boundary_images=occluded_boundary_images,
+                foreground_rgb_images=foreground_rgb_images,
+                foreground_alpha_images=foreground_alpha_images,
+                foreground_confidence_images=foreground_confidence_images,
+                composite_roi_mask_images=composite_roi_mask_images,
             )
             bg_images = self.inputs_padding(bg_images, target_len)
             person_mask_images = self.inputs_padding(person_mask_images, target_len)
             if hard_foreground_images is not None:
                 hard_foreground_images = self.inputs_padding(hard_foreground_images, target_len)
+            if foreground_rgb_images is not None:
+                foreground_rgb_images = self.inputs_padding(foreground_rgb_images, target_len)
+            if foreground_alpha_images is not None:
+                foreground_alpha_images = self.inputs_padding(foreground_alpha_images, target_len)
+            if foreground_confidence_images is not None:
+                foreground_confidence_images = self.inputs_padding(foreground_confidence_images, target_len)
             if soft_band_images is not None:
                 soft_band_images = self.inputs_padding(soft_band_images, target_len)
             if boundary_band_images is not None:
@@ -1369,6 +1449,8 @@ class WanAnimate:
                 background_confidence_images = self.inputs_padding(background_confidence_images, target_len)
             if background_source_provenance_images is not None:
                 background_source_provenance_images = self.inputs_padding(background_source_provenance_images, target_len)
+            if composite_roi_mask_images is not None:
+                composite_roi_mask_images = self.inputs_padding(composite_roi_mask_images, target_len)
             if occlusion_band_images is not None:
                 occlusion_band_images = self.inputs_padding(occlusion_band_images, target_len)
             if uncertainty_map_images is not None:
@@ -1441,6 +1523,8 @@ class WanAnimate:
         )
         replacement_masks = None
         replacement_mask_debug = {}
+        core_condition_rgb_images = None
+        core_conditioning_summary = {"available": False}
         if replace_flag:
             if soft_band_images is None and boundary_band_images is None and replacement_mask_mode != "hard":
                 logging.warning(
@@ -1487,6 +1571,10 @@ class WanAnimate:
                 hand_boundary_images=np.asarray(hand_boundary_images) if hand_boundary_images is not None else None,
                 cloth_boundary_images=np.asarray(cloth_boundary_images) if cloth_boundary_images is not None else None,
                 occluded_boundary_images=np.asarray(occluded_boundary_images) if occluded_boundary_images is not None else None,
+                foreground_rgb_images=np.asarray(foreground_rgb_images) if foreground_rgb_images is not None else None,
+                foreground_alpha_images=np.asarray(foreground_alpha_images) if foreground_alpha_images is not None else None,
+                foreground_confidence_images=np.asarray(foreground_confidence_images) if foreground_confidence_images is not None else None,
+                composite_roi_mask_images=np.asarray(composite_roi_mask_images) if composite_roi_mask_images is not None else None,
                 face_confidence_images=(
                     face_conditioning["face_confidence_map"] if face_conditioning is not None else None
                 ),
@@ -1509,6 +1597,21 @@ class WanAnimate:
                 replacement_masks=replacement_masks,
                 real_frame_len=real_frame_len,
             )
+            if replacement_conditioning_mode == "core_rich_v1" and bg_images is not None:
+                core_conditioning = build_core_condition_rgb(
+                    background_rgb=np.asarray(bg_images),
+                    foreground_rgb=np.asarray(foreground_rgb_images) if foreground_rgb_images is not None else None,
+                    foreground_alpha=np.asarray(foreground_alpha_images) if foreground_alpha_images is not None else None,
+                    soft_alpha=replacement_masks["soft_alpha"][: len(bg_images)].cpu().numpy() if replacement_masks["soft_alpha"] is not None else None,
+                    trimap_unknown=replacement_masks["trimap_unknown_map"][: len(bg_images)].cpu().numpy() if replacement_masks["trimap_unknown_map"] is not None else None,
+                    hair_alpha=np.asarray(hair_edge_mask_images) if hair_edge_mask_images is not None else None,
+                    uncertainty_map=replacement_masks["uncertainty_map"][: len(bg_images)].cpu().numpy() if replacement_masks["uncertainty_map"] is not None else None,
+                    occlusion_band=replacement_masks["occlusion_band"][: len(bg_images)].cpu().numpy() if replacement_masks["occlusion_band"] is not None else None,
+                    face_preserve=replacement_masks["face_preserve_map"][: len(bg_images)].cpu().numpy() if replacement_masks["face_preserve_map"] is not None else None,
+                    composite_roi_mask=replacement_masks["composite_roi_mask"][: len(bg_images)].cpu().numpy() if replacement_masks["composite_roi_mask"] is not None else None,
+                )
+                core_condition_rgb_images = self.inputs_padding(core_conditioning["core_condition_rgb"], target_len)
+                core_conditioning_summary = core_conditioning["summary"]
         static_condition_encode_sec = text_condition_encode_sec + reference_condition_encode_sec
 
         runtime_stats = {
@@ -1536,6 +1639,9 @@ class WanAnimate:
             "target_len": int(target_len),
             "replacement_mask_mode": replacement_mask_mode if replace_flag else None,
             "replacement_conditioning_mode": replacement_conditioning_mode if replace_flag else None,
+            "decoupled_contract_available": bool(
+                replace_flag and foreground_rgb_images is not None and foreground_alpha_images is not None and composite_roi_mask_images is not None
+            ),
             "replacement_mask_downsample_mode": replacement_mask_downsample_mode if replace_flag else None,
             "replacement_boundary_strength": float(replacement_boundary_strength) if replace_flag else None,
             "replacement_transition_low": float(replacement_transition_low) if replace_flag else None,
@@ -1572,6 +1678,7 @@ class WanAnimate:
                 replacement_masks.get("boundary_conditioning_summary")
                 if replace_flag and replacement_masks is not None else None
             ),
+            "core_conditioning_summary": core_conditioning_summary if replace_flag else {"available": False},
             "pose_tracks_available": bool(preprocess_metadata and "pose_tracks" in preprocess_metadata.get("src_files", {})),
             "limb_tracks_available": bool(preprocess_metadata and "limb_tracks" in preprocess_metadata.get("src_files", {})),
             "hand_tracks_available": bool(preprocess_metadata and "hand_tracks" in preprocess_metadata.get("src_files", {})),
@@ -1591,6 +1698,7 @@ class WanAnimate:
             "unresolved_region_available": bool(unresolved_region_images is not None) if replace_flag else False,
             "background_confidence_available": bool(background_confidence_images is not None) if replace_flag else False,
             "background_source_provenance_available": bool(background_source_provenance_images is not None) if replace_flag else False,
+            "core_condition_rgb_available": bool(core_condition_rgb_images is not None) if replace_flag else False,
             "occlusion_band_available": bool(occlusion_band_images is not None) if replace_flag else False,
             "uncertainty_map_available": bool(uncertainty_map_images is not None) if replace_flag else False,
             "text_condition_encode_sec": text_condition_encode_sec,
@@ -1667,8 +1775,9 @@ class WanAnimate:
                                             )
 
             if replace_flag:
+                bg_condition_images = core_condition_rgb_images if core_condition_rgb_images is not None else bg_images
                 batch["bg_pixel_values"] = rearrange(
-                    torch.tensor(np.stack(bg_images[start:end]) / 127.5 - 1),
+                    torch.tensor(np.stack(bg_condition_images[start:end]) / 127.5 - 1),
                     "t h w c -> 1 c t h w",
                 )
 

@@ -632,7 +632,7 @@ def _parse_args():
         "--matting_mode",
         type=str,
         default="heuristic",
-        choices=["none", "heuristic", "high_precision_v2"],
+        choices=["none", "heuristic", "high_precision_v2", "production_v1"],
         help="Matting adapter mode used to derive soft alpha."
     )
     parser.add_argument(
@@ -706,6 +706,30 @@ def _parse_args():
         type=float,
         default=5.0,
         help="Bilateral sigmaSpace used by matting_mode=high_precision_v2."
+    )
+    parser.add_argument(
+        "--alpha_v3_detail_boost",
+        type=float,
+        default=0.24,
+        help="Detail boost used by matting_mode=production_v1."
+    )
+    parser.add_argument(
+        "--alpha_v3_color_mix",
+        type=float,
+        default=0.42,
+        help="Color-based alpha mixing weight used by matting_mode=production_v1."
+    )
+    parser.add_argument(
+        "--alpha_v3_active_blend",
+        type=float,
+        default=0.55,
+        help="Blend strength between legacy alpha and refined alpha used by matting_mode=production_v1."
+    )
+    parser.add_argument(
+        "--alpha_v3_delta_clip",
+        type=float,
+        default=0.10,
+        help="Maximum per-pixel alpha correction magnitude used by matting_mode=production_v1."
     )
     parser.add_argument(
         "--bg_inpaint_mode",
@@ -1088,6 +1112,10 @@ if __name__ == '__main__':
                                             alpha_v2_hard_threshold=args.alpha_v2_hard_threshold,
                                             alpha_v2_bilateral_sigma_color=args.alpha_v2_bilateral_sigma_color,
                                             alpha_v2_bilateral_sigma_space=args.alpha_v2_bilateral_sigma_space,
+                                            alpha_v3_detail_boost=args.alpha_v3_detail_boost,
+                                            alpha_v3_color_mix=args.alpha_v3_color_mix,
+                                            alpha_v3_active_blend=args.alpha_v3_active_blend,
+                                            alpha_v3_delta_clip=args.alpha_v3_delta_clip,
                                             bg_inpaint_mode=args.bg_inpaint_mode,
                                             bg_inpaint_method=args.bg_inpaint_method,
                                             bg_inpaint_mask_expand=args.bg_inpaint_mask_expand,
@@ -1272,6 +1300,10 @@ if __name__ == '__main__':
                 "alpha_v2_hard_threshold": args.alpha_v2_hard_threshold,
                 "alpha_v2_bilateral_sigma_color": args.alpha_v2_bilateral_sigma_color,
                 "alpha_v2_bilateral_sigma_space": args.alpha_v2_bilateral_sigma_space,
+                "alpha_v3_detail_boost": args.alpha_v3_detail_boost,
+                "alpha_v3_color_mix": args.alpha_v3_color_mix,
+                "alpha_v3_active_blend": args.alpha_v3_active_blend,
+                "alpha_v3_delta_clip": args.alpha_v3_delta_clip,
                 "stats": pipeline_outputs.get("boundary_fusion", {}),
             },
             reference_settings={

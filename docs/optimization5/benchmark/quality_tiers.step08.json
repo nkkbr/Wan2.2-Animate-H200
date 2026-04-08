@@ -1,0 +1,23 @@
+{
+  "default": {
+    "description": "Current safe production baseline on the strongest reviewed-edge preprocess bundle.",
+    "src_root_path": "runs/optimization3_step06_round5_ab/preprocess_video_v2/preprocess",
+    "sample_steps": 4,
+    "replacement_conditioning_mode": "legacy",
+    "boundary_refine_mode": "none"
+  },
+  "high": {
+    "description": "Conservative H200 high-quality tier frozen from optimization5 Step 08 Round 3.",
+    "src_root_path": "runs/optimization3_step06_round5_ab/preprocess_video_v2/preprocess",
+    "sample_steps": 5,
+    "replacement_conditioning_mode": "legacy",
+    "boundary_refine_mode": "none"
+  },
+  "extreme": {
+    "description": "Most conservative extreme tier retained for benchmark reference only; not production-promoted.",
+    "src_root_path": "runs/optimization3_step06_round5_ab/preprocess_video_v2/preprocess",
+    "sample_steps": 6,
+    "replacement_conditioning_mode": "legacy",
+    "boundary_refine_mode": "none"
+  }
+}

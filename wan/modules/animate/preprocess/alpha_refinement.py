@@ -295,6 +295,170 @@ def run_alpha_refinement_v2(
     }
 
 
+def run_alpha_refinement_v3(
+    *,
+    frames: np.ndarray,
+    legacy_soft_alpha: np.ndarray,
+    alpha_v2: np.ndarray,
+    trimap_v2: np.ndarray,
+    alpha_uncertainty_v2: np.ndarray,
+    fine_boundary_mask: np.ndarray,
+    hair_edge_mask: np.ndarray,
+    refined_hard_foreground: np.ndarray,
+    support_region: np.ndarray,
+    unknown_region: np.ndarray,
+    head_prior: np.ndarray,
+    hand_prior: np.ndarray,
+    occlusion_prior: np.ndarray,
+    detail_boost: float = 0.24,
+    color_mix: float = 0.42,
+    active_blend: float = 0.55,
+    delta_clip: float = 0.10,
+) -> dict:
+    frames = np.asarray(frames, dtype=np.uint8)
+    legacy_soft_alpha = np.asarray(legacy_soft_alpha, dtype=np.float32)
+    alpha_v2 = np.asarray(alpha_v2, dtype=np.float32)
+    trimap_v2 = np.asarray(trimap_v2, dtype=np.float32)
+    alpha_uncertainty_v2 = np.asarray(alpha_uncertainty_v2, dtype=np.float32)
+    fine_boundary_mask = np.asarray(fine_boundary_mask, dtype=np.float32)
+    hair_edge_mask = np.asarray(hair_edge_mask, dtype=np.float32)
+    refined_hard_foreground = np.asarray(refined_hard_foreground, dtype=np.float32)
+    support_region = np.asarray(support_region, dtype=np.float32)
+    unknown_region = np.asarray(unknown_region, dtype=np.float32)
+    head_prior = np.asarray(head_prior, dtype=np.float32)
+    hand_prior = np.asarray(hand_prior, dtype=np.float32)
+    occlusion_prior = np.asarray(occlusion_prior, dtype=np.float32)
+
+    alpha_v3_frames = []
+    trimap_unknown_frames = []
+    hair_alpha_frames = []
+    confidence_frames = []
+    provenance_frames = []
+
+    active_blend = float(np.clip(active_blend, 0.0, 1.0))
+    color_mix = float(np.clip(color_mix, 0.0, 1.0))
+    detail_boost = float(np.clip(detail_boost, 0.0, 1.0))
+    delta_clip = float(max(0.01, delta_clip))
+
+    for frame, legacy_alpha, alpha, trimap, uncertainty, fine_boundary, hair_edge, refined_hard, support, unknown, head, hand, occlusion in zip(
+        frames,
+        legacy_soft_alpha,
+        alpha_v2,
+        trimap_v2,
+        alpha_uncertainty_v2,
+        fine_boundary_mask,
+        hair_edge_mask,
+        refined_hard_foreground,
+        support_region,
+        unknown_region,
+        head_prior,
+        hand_prior,
+        occlusion_prior,
+    ):
+        hard = (refined_hard > 0.5).astype(np.uint8)
+        sure_fg = cv2.erode(hard, np.ones((5, 5), dtype=np.uint8), iterations=1)
+        support_binary = (np.clip(np.maximum.reduce([support, fine_boundary, unknown, 0.75 * head]), 0.0, 1.0) > 0.12).astype(np.uint8)
+        sure_bg = (1 - cv2.dilate(support_binary, np.ones((9, 9), dtype=np.uint8), iterations=1)).astype(np.uint8)
+
+        fg_color = _mean_color(frame, sure_fg, fallback=np.array([192.0, 160.0, 144.0], dtype=np.float32))
+        bg_color = _mean_color(frame, sure_bg, fallback=frame.reshape(-1, 3).mean(axis=0))
+        color_alpha = _distance_alpha(frame, fg_color, bg_color)
+
+        hair_top_band = _top_band_from_prior(head, top_ratio=0.72)
+        hair_region = np.clip(
+            np.maximum.reduce([
+                hair_edge,
+                hair_top_band * np.clip(0.65 * fine_boundary + 0.35 * unknown, 0.0, 1.0),
+            ]),
+            0.0,
+            1.0,
+        ).astype(np.float32)
+        trimap_unknown = np.clip(
+            np.maximum.reduce([
+                (trimap == 0.5).astype(np.float32),
+                unknown,
+                0.85 * fine_boundary,
+                0.65 * hair_region,
+                0.45 * occlusion,
+                ((alpha > 0.08) & (alpha < 0.92)).astype(np.float32) * 0.35,
+            ]),
+            0.0,
+            1.0,
+        ).astype(np.float32)
+        trimap_unknown = cv2.GaussianBlur(trimap_unknown, (5, 5), sigmaX=0)
+        trimap_unknown = np.clip(trimap_unknown, 0.0, 1.0).astype(np.float32)
+
+        blend_support = np.clip(
+            0.45 * trimap_unknown
+            + 0.30 * hair_region
+            + 0.15 * hand
+            + 0.10 * fine_boundary,
+            0.0,
+            1.0,
+        ).astype(np.float32)
+        certainty_gate = np.clip(1.0 - 0.75 * uncertainty, 0.0, 1.0).astype(np.float32)
+        color_delta = np.clip(color_alpha - alpha, -delta_clip, delta_clip).astype(np.float32)
+        alpha_v3 = np.clip(
+            alpha + color_mix * color_delta * blend_support * certainty_gate,
+            0.0,
+            1.0,
+        ).astype(np.float32)
+        alpha_v3 = np.clip(
+            alpha_v3 + detail_boost * hair_region * (1.0 - alpha_v3) * certainty_gate * 0.10,
+            0.0,
+            1.0,
+        ).astype(np.float32)
+        alpha_v3 = np.where(sure_fg > 0, 1.0, alpha_v3)
+        alpha_v3 = np.where(sure_bg > 0, 0.0, alpha_v3)
+        alpha_v3 = np.clip(alpha_v3, 0.0, 1.0).astype(np.float32)
+
+        active_soft_alpha = np.clip(
+            legacy_alpha * (1.0 - active_blend * blend_support) + alpha_v3 * (active_blend * blend_support),
+            0.0,
+            1.0,
+        ).astype(np.float32)
+        active_soft_alpha = np.where(sure_fg > 0, 1.0, active_soft_alpha)
+        active_soft_alpha = np.where(sure_bg > 0, 0.0, active_soft_alpha)
+        active_soft_alpha = np.clip(active_soft_alpha, 0.0, 1.0).astype(np.float32)
+
+        hair_alpha = np.clip(alpha_v3 * hair_region, 0.0, 1.0).astype(np.float32)
+        alpha_confidence = np.clip(
+            1.0 - np.clip(0.55 * uncertainty + 0.25 * trimap_unknown + 0.20 * np.abs(alpha_v3 - legacy_alpha), 0.0, 1.0),
+            0.0,
+            1.0,
+        ).astype(np.float32)
+        provenance = np.zeros_like(alpha_v3, dtype=np.float32)
+        provenance = np.where(fine_boundary > 0.20, 0.33, provenance).astype(np.float32)
+        provenance = np.where(hair_region > 0.20, 0.66, provenance).astype(np.float32)
+        provenance = np.where(hand > 0.15, 1.0, provenance).astype(np.float32)
+
+        alpha_v3_frames.append(active_soft_alpha)
+        trimap_unknown_frames.append(trimap_unknown)
+        hair_alpha_frames.append(hair_alpha)
+        confidence_frames.append(alpha_confidence)
+        provenance_frames.append(provenance)
+
+    alpha_v3 = np.stack(alpha_v3_frames).astype(np.float32)
+    trimap_unknown = np.stack(trimap_unknown_frames).astype(np.float32)
+    hair_alpha = np.stack(hair_alpha_frames).astype(np.float32)
+    alpha_confidence = np.stack(confidence_frames).astype(np.float32)
+    alpha_source_provenance = np.stack(provenance_frames).astype(np.float32)
+
+    return {
+        "soft_alpha": alpha_v3,
+        "trimap_unknown": trimap_unknown,
+        "hair_alpha": hair_alpha,
+        "alpha_confidence": alpha_confidence,
+        "alpha_source_provenance": alpha_source_provenance,
+        "stats": {
+            "alpha_v3_mean": float(alpha_v3.mean()),
+            "trimap_unknown_mean": float(trimap_unknown.mean()),
+            "hair_alpha_mean": float(hair_alpha.mean()),
+            "alpha_confidence_v3_mean": float(alpha_confidence.mean()),
+        },
+    }
+
+
 def make_trimap_preview(trimap: np.ndarray) -> np.ndarray:
     trimap = np.asarray(trimap, dtype=np.float32)
     if trimap.ndim != 3:

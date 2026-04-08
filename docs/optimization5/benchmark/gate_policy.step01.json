@@ -1,0 +1,28 @@
+{
+  "policy_name": "optimization5_step01_reviewed_edge_gate_v1",
+  "required_case_names": [
+    "reviewed_edge_dataset_build",
+    "baseline_preprocess_contract",
+    "reviewed_edge_groundtruth_metrics"
+  ],
+  "required_outputs": [
+    "summary.json",
+    "summary.md",
+    "gate_result.json"
+  ],
+  "minimum_keyframe_count": 20,
+  "minimum_reviewed_ratio": 1.0,
+  "minimum_category_coverage": {
+    "face": 3,
+    "hair": 3,
+    "hand": 3,
+    "cloth": 3,
+    "occluded": 3
+  },
+  "metric_thresholds": {
+    "boundary_f1_mean_min": 0.30,
+    "alpha_mae_mean_max": 0.05,
+    "trimap_error_mean_max": 0.35
+  },
+  "max_repeat_metric_delta": 1e-09
+}

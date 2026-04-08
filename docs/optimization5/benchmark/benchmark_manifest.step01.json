@@ -1,0 +1,16 @@
+{
+  "manifest_name": "optimization5_step01_reviewed_edge_benchmark_v1",
+  "description": "Reviewed edge mini-benchmark derived from the frozen optimization4 bootstrap keyframes and a frozen high-precision preprocess bundle.",
+  "cases": [
+    {
+      "case_id": "replacement_short10s_reviewed_v1",
+      "video_path": "/home/user1/wan2.2/test1/260306_01_step_1_0000_0010.mp4",
+      "source_dataset_dir": "/home/user1/wan2.2_20260407/Wan2.2/runs/optimization4_step01_core_v2/edge_mini_set",
+      "label_source_preprocess_dir": "/home/user1/wan2.2_20260407/Wan2.2/runs/optimization3_step06_round5_ab/preprocess_video_v2/preprocess",
+      "baseline_prediction_preprocess_dir": "/home/user1/wan2.2_20260407/Wan2.2/runs/optimization3_step08_round2_generate_ab_v3/repeat_01/face_focus_highres/preprocess",
+      "review_mode": "internal_review_v1",
+      "target_keyframe_count": 24,
+      "min_keyframe_count": 20
+    }
+  ]
+}

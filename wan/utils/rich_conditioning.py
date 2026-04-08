@@ -246,3 +246,91 @@ def build_boundary_conditioning_maps(
             "conditioning_alpha_delta_mean": float(np.abs(conditioning_soft_alpha - base_alpha).mean()),
         },
     }
+
+
+def build_core_condition_rgb(
+    *,
+    background_rgb: np.ndarray,
+    foreground_rgb: np.ndarray | None,
+    foreground_alpha: np.ndarray | None,
+    soft_alpha: np.ndarray | None,
+    trimap_unknown: np.ndarray | None,
+    hair_alpha: np.ndarray | None,
+    uncertainty_map: np.ndarray | None,
+    occlusion_band: np.ndarray | None,
+    face_preserve: np.ndarray | None,
+    composite_roi_mask: np.ndarray | None,
+) -> dict:
+    background_rgb = np.asarray(background_rgb, dtype=np.float32)
+    if foreground_rgb is None:
+        return {
+            "core_condition_rgb": background_rgb.astype(np.uint8),
+            "summary": {
+                "available": False,
+                "fg_weight_mean": 0.0,
+                "roi_mean": 0.0,
+                "confidence_mean": 0.0,
+            },
+        }
+
+    foreground_rgb = np.asarray(foreground_rgb, dtype=np.float32)
+    if foreground_alpha is None:
+        foreground_alpha = np.zeros(background_rgb.shape[:3], dtype=np.float32)
+    else:
+        foreground_alpha = np.clip(np.asarray(foreground_alpha, dtype=np.float32), 0.0, 1.0)
+
+    def _mask(value):
+        if value is None:
+            return np.zeros(background_rgb.shape[:3], dtype=np.float32)
+        return np.clip(np.asarray(value, dtype=np.float32), 0.0, 1.0)
+
+    soft_alpha = _mask(soft_alpha)
+    trimap_unknown = _mask(trimap_unknown)
+    hair_alpha = _mask(hair_alpha)
+    uncertainty_map = _mask(uncertainty_map)
+    occlusion_band = _mask(occlusion_band)
+    face_preserve = _mask(face_preserve)
+    composite_roi_mask = _mask(composite_roi_mask)
+
+    alpha_den = np.clip(foreground_alpha, 1e-3, 1.0)[..., None]
+    foreground_unpremul = np.where(
+        foreground_alpha[..., None] > 1e-3,
+        np.clip(foreground_rgb / alpha_den, 0.0, 255.0),
+        background_rgb,
+    )
+
+    roi = np.clip(
+        np.maximum.reduce([
+            composite_roi_mask,
+            0.65 * trimap_unknown,
+            0.55 * hair_alpha,
+        ]),
+        0.0,
+        1.0,
+    )
+    confidence = np.clip(
+        1.0 - 0.55 * uncertainty_map - 0.25 * occlusion_band + 0.10 * face_preserve,
+        0.0,
+        1.0,
+    )
+    fg_weight = np.clip(
+        0.02 * soft_alpha
+        + 0.06 * roi * (0.25 + 0.75 * confidence)
+        + 0.04 * hair_alpha
+        + 0.02 * face_preserve,
+        0.0,
+        0.08,
+    )
+    foreground_proxy = 0.55 * foreground_unpremul + 0.45 * background_rgb
+    core_rgb = background_rgb * (1.0 - fg_weight[..., None]) + foreground_proxy * fg_weight[..., None]
+    core_rgb = np.clip(core_rgb, 0.0, 255.0).astype(np.uint8)
+
+    return {
+        "core_condition_rgb": core_rgb,
+        "summary": {
+            "available": True,
+            "fg_weight_mean": float(fg_weight.mean()),
+            "roi_mean": float(roi.mean()),
+            "confidence_mean": float(confidence.mean()),
+        },
+    }
