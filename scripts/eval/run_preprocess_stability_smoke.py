@@ -109,6 +109,32 @@ PRESETS = {
             "100",
         ],
     },
+    "stable_h200_extreme": {
+        "resolution_area": (640, 360),
+        "fps": 5,
+        "sam_chunk_len": 20,
+        "sam_keyframes_per_chunk": 4,
+        "sam_use_negative_points": False,
+        "sam_reprompt_interval": 0,
+        "sam_runtime_profile": "h200_safe",
+        "sam_apply_postprocessing": False,
+        "extra_args": [
+            "--preprocess_runtime_profile",
+            "h200_extreme",
+            "--sam_prompt_mode",
+            "mask_seed",
+            "--sam_prompt_body_conf_thresh",
+            "0.999",
+            "--sam_prompt_face_conf_thresh",
+            "0.999",
+            "--sam_prompt_hand_conf_thresh",
+            "0.999",
+            "--sam_prompt_face_min_points",
+            "100",
+            "--sam_prompt_hand_min_points",
+            "100",
+        ],
+    },
 }
 
 

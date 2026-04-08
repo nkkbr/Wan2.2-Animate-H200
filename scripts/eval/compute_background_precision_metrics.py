@@ -19,6 +19,7 @@ def main():
     metadata = _read_json(src_root / "metadata.json")
 
     background_stats = runtime_stats.get("background", {})
+    multistage = runtime_stats.get("multistage", {})
     result = {
         "mode": "proxy",
         "background_mode": background_stats.get("mode"),
@@ -27,6 +28,8 @@ def main():
         "background_artifact": metadata.get("src_files", {}).get("background", {}).get("path"),
         "visible_support_artifact": metadata.get("src_files", {}).get("visible_support", {}).get("path"),
         "unresolved_region_artifact": metadata.get("src_files", {}).get("unresolved_region", {}).get("path"),
+        "person_roi_coverage_ratio": ((multistage.get("person_roi_analysis") or {}).get("proposal_stats") or {}).get("coverage_ratio"),
+        "face_roi_coverage_ratio": ((multistage.get("face_roi_analysis") or {}).get("proposal_stats") or {}).get("coverage_ratio"),
     }
 
     output_path = Path(args.output_json)
@@ -37,4 +40,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

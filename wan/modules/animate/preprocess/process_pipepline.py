@@ -51,6 +51,12 @@ from wan.utils.replacement_masks import build_soft_boundary_band
 from boundary_fusion import fuse_boundary_signals, make_fused_boundary_preview
 from background_clean_plate import build_clean_plate_background
 from matting_adapter import make_matting_alpha_preview, run_matting_adapter
+from multistage_preprocess import (
+    fuse_multistage_pose_metas,
+    propose_face_roi_bboxes,
+    propose_person_roi_bboxes,
+    run_roi_pose_refinement,
+)
 from parsing_adapter import make_parsing_overlay, run_parsing_adapter
 from reference_normalization import (
     bbox_from_pose_meta,
@@ -187,6 +193,30 @@ class ProcessPipeline():
         reference_structure_segment_clamp_max=1.25,
         reference_structure_width_budget_ratio=1.05,
         reference_structure_height_budget_ratio=1.05,
+        multistage_preprocess_mode="none",
+        disable_person_roi_refine=False,
+        disable_face_roi_refine=False,
+        person_roi_stage_resolution_area=None,
+        person_roi_stage_min_short_side=None,
+        person_roi_expand_ratio=1.18,
+        person_roi_min_size_ratio=0.20,
+        person_roi_target_long_side=None,
+        person_roi_body_conf_thresh=0.35,
+        person_roi_hand_conf_thresh=0.25,
+        person_roi_face_conf_thresh=0.35,
+        person_roi_fuse_weight=0.72,
+        person_roi_conf_margin=0.03,
+        face_roi_stage_resolution_area=None,
+        face_roi_stage_min_short_side=None,
+        face_roi_expand_ratio=1.65,
+        face_roi_min_size_ratio=0.12,
+        face_roi_target_long_side=None,
+        face_roi_conf_thresh=0.35,
+        face_roi_fuse_weight=0.86,
+        face_roi_conf_margin=0.02,
+        multistage_pose_extra_smooth=0.10,
+        multistage_face_bbox_extra_smooth=0.08,
+        preprocess_runtime_profile="legacy_safe",
         iterations=3,
         k=7,
         w_len=1,
@@ -252,8 +282,41 @@ class ProcessPipeline():
                         divisor=16,
                     )
                     for frame in raw_frames
-                ]
+            ]
             analysis_height, analysis_width = analysis_frames[0].shape[:2]
+            multistage_enabled = multistage_preprocess_mode != "none"
+            person_roi_enabled = multistage_enabled and not bool(disable_person_roi_refine)
+            face_roi_enabled = multistage_enabled and not bool(disable_face_roi_refine)
+            person_stage_frames = None
+            face_stage_frames = None
+            person_stage_shape = None
+            face_stage_shape = None
+            if person_roi_enabled:
+                person_roi_stage_resolution_area = person_roi_stage_resolution_area or analysis_resolution_area
+                person_target_area = int(person_roi_stage_resolution_area[0] * person_roi_stage_resolution_area[1])
+                person_stage_frames = [
+                    self._resize_frame_with_analysis_policy(
+                        frame,
+                        target_area=person_target_area,
+                        min_short_side=person_roi_stage_min_short_side,
+                        divisor=16,
+                    )
+                    for frame in raw_frames
+                ]
+                person_stage_shape = person_stage_frames[0].shape[:2]
+            if face_roi_enabled:
+                face_roi_stage_resolution_area = face_roi_stage_resolution_area or person_roi_stage_resolution_area or analysis_resolution_area
+                face_target_area = int(face_roi_stage_resolution_area[0] * face_roi_stage_resolution_area[1])
+                face_stage_frames = [
+                    self._resize_frame_with_analysis_policy(
+                        frame,
+                        target_area=face_target_area,
+                        min_short_side=face_roi_stage_min_short_side,
+                        divisor=16,
+                    )
+                    for frame in raw_frames
+                ]
+                face_stage_shape = face_stage_frames[0].shape[:2]
             runtime_stage_seconds["load_and_resize"] = time.perf_counter() - resize_start
             logger.info(f"Processing pose meta")
 
@@ -285,14 +348,194 @@ class ProcessPipeline():
                 max_center_shift=face_bbox_max_center_shift,
                 hold_frames=face_bbox_hold_frames,
             )
+            global_pose_seconds = time.perf_counter() - pose_start
+            runtime_stage_seconds["pose_face_controls_global"] = global_pose_seconds
+
+            multistage_stats = {
+                "enabled": bool(multistage_enabled),
+                "mode": multistage_preprocess_mode,
+                "person_roi_enabled": bool(person_roi_enabled),
+                "face_roi_enabled": bool(face_roi_enabled),
+                "global_analysis": {
+                    "shape": [int(analysis_height), int(analysis_width)],
+                    "runtime_sec": float(global_pose_seconds),
+                    "peak_memory_gb": float(self._peak_memory_gb()),
+                },
+                "person_roi_analysis": {
+                    "enabled": bool(person_roi_enabled),
+                    "shape": None if person_stage_shape is None else [int(person_stage_shape[0]), int(person_stage_shape[1])],
+                    "runtime_sec": 0.0,
+                    "peak_memory_gb": 0.0,
+                    "proposal_stats": {},
+                    "refine_stats": {},
+                },
+                "face_roi_analysis": {
+                    "enabled": bool(face_roi_enabled),
+                    "shape": None if face_stage_shape is None else [int(face_stage_shape[0]), int(face_stage_shape[1])],
+                    "runtime_sec": 0.0,
+                    "peak_memory_gb": 0.0,
+                    "proposal_stats": {},
+                    "refine_stats": {},
+                },
+                "fusion": {
+                    "runtime_sec": 0.0,
+                    "stats": {},
+                },
+            }
+
+            if person_roi_enabled:
+                person_stage_start = time.perf_counter()
+                person_roi_bboxes, person_roi_proposal_stats = propose_person_roi_bboxes(
+                    tpl_pose_metas,
+                    body_conf_thresh=person_roi_body_conf_thresh,
+                    hand_conf_thresh=person_roi_hand_conf_thresh,
+                    face_conf_thresh=person_roi_face_conf_thresh,
+                    expand_ratio=person_roi_expand_ratio,
+                    min_size_ratio=person_roi_min_size_ratio,
+                )
+                person_roi_pose_metas, person_roi_refine_stats = run_roi_pose_refinement(
+                    pose2d=self.pose2d,
+                    stage_frames=person_stage_frames,
+                    roi_bboxes_norm=person_roi_bboxes,
+                    target_long_side=person_roi_target_long_side,
+                )
+                fused_pose_metas, fusion_stats = fuse_multistage_pose_metas(
+                    tpl_pose_metas,
+                    person_metas=person_roi_pose_metas,
+                    face_metas=None,
+                    person_weight=person_roi_fuse_weight,
+                    conf_margin=person_roi_conf_margin,
+                )
+                tpl_pose_metas, pose_conf_curve = stabilize_pose_metas(
+                    fused_pose_metas,
+                    method=pose_smooth_method,
+                    pose_conf_thresh_body=pose_conf_thresh_body,
+                    pose_conf_thresh_hand=pose_conf_thresh_hand,
+                    pose_conf_thresh_face=pose_conf_thresh_face,
+                    pose_smooth_strength_body=min(0.98, pose_smooth_strength_body + multistage_pose_extra_smooth),
+                    pose_smooth_strength_hand=min(0.95, pose_smooth_strength_hand + multistage_pose_extra_smooth * 0.6),
+                    pose_smooth_strength_face=min(0.98, pose_smooth_strength_face + multistage_pose_extra_smooth),
+                    pose_max_velocity_body=pose_max_velocity_body,
+                    pose_max_velocity_hand=pose_max_velocity_hand,
+                    pose_max_velocity_face=pose_max_velocity_face,
+                    pose_interp_max_gap=pose_interp_max_gap,
+                )
+                face_bboxes, face_bbox_curve = stabilize_face_bboxes(
+                    tpl_pose_metas,
+                    image_shape=(analysis_height, analysis_width),
+                    scale=1.3,
+                    conf_thresh=face_conf_thresh,
+                    min_valid_points=face_min_valid_points,
+                    smooth_method=face_bbox_smooth_method,
+                    smooth_strength=min(0.98, face_bbox_smooth_strength + multistage_face_bbox_extra_smooth),
+                    max_scale_change=face_bbox_max_scale_change,
+                    max_center_shift=face_bbox_max_center_shift,
+                    hold_frames=face_bbox_hold_frames,
+                )
+                runtime_stage_seconds["pose_face_controls_person_roi"] = time.perf_counter() - person_stage_start
+                multistage_stats["person_roi_analysis"].update({
+                    "runtime_sec": float(runtime_stage_seconds["pose_face_controls_person_roi"]),
+                    "peak_memory_gb": float(self._peak_memory_gb()),
+                    "proposal_stats": person_roi_proposal_stats,
+                    "refine_stats": person_roi_refine_stats,
+                })
+                multistage_stats["fusion"]["stats"] = fusion_stats
+
+            if face_roi_enabled:
+                face_stage_start = time.perf_counter()
+                face_roi_bboxes, face_roi_proposal_stats = propose_face_roi_bboxes(
+                    tpl_pose_metas,
+                    face_bboxes,
+                    image_shape=(analysis_height, analysis_width),
+                    expand_ratio=face_roi_expand_ratio,
+                    min_size_ratio=face_roi_min_size_ratio,
+                    face_conf_thresh=face_roi_conf_thresh,
+                )
+                face_roi_pose_metas, face_roi_refine_stats = run_roi_pose_refinement(
+                    pose2d=self.pose2d,
+                    stage_frames=face_stage_frames,
+                    roi_bboxes_norm=face_roi_bboxes,
+                    target_long_side=face_roi_target_long_side,
+                )
+                fused_pose_metas, face_fusion_stats = fuse_multistage_pose_metas(
+                    tpl_pose_metas,
+                    person_metas=None,
+                    face_metas=face_roi_pose_metas,
+                    face_weight=face_roi_fuse_weight,
+                    conf_margin=face_roi_conf_margin,
+                )
+                tpl_pose_metas, pose_conf_curve = stabilize_pose_metas(
+                    fused_pose_metas,
+                    method=pose_smooth_method,
+                    pose_conf_thresh_body=pose_conf_thresh_body,
+                    pose_conf_thresh_hand=pose_conf_thresh_hand,
+                    pose_conf_thresh_face=pose_conf_thresh_face,
+                    pose_smooth_strength_body=min(0.98, pose_smooth_strength_body + multistage_pose_extra_smooth),
+                    pose_smooth_strength_hand=min(0.95, pose_smooth_strength_hand + multistage_pose_extra_smooth * 0.6),
+                    pose_smooth_strength_face=min(0.99, pose_smooth_strength_face + multistage_pose_extra_smooth + 0.05),
+                    pose_max_velocity_body=pose_max_velocity_body,
+                    pose_max_velocity_hand=pose_max_velocity_hand,
+                    pose_max_velocity_face=pose_max_velocity_face,
+                    pose_interp_max_gap=pose_interp_max_gap,
+                )
+                face_bboxes, face_bbox_curve = stabilize_face_bboxes(
+                    tpl_pose_metas,
+                    image_shape=(analysis_height, analysis_width),
+                    scale=1.3,
+                    conf_thresh=face_conf_thresh,
+                    min_valid_points=face_min_valid_points,
+                    smooth_method=face_bbox_smooth_method,
+                    smooth_strength=min(0.99, face_bbox_smooth_strength + multistage_face_bbox_extra_smooth + 0.05),
+                    max_scale_change=face_bbox_max_scale_change,
+                    max_center_shift=face_bbox_max_center_shift,
+                    hold_frames=face_bbox_hold_frames,
+                )
+                runtime_stage_seconds["pose_face_controls_face_roi"] = time.perf_counter() - face_stage_start
+                multistage_stats["face_roi_analysis"].update({
+                    "runtime_sec": float(runtime_stage_seconds["pose_face_controls_face_roi"]),
+                    "peak_memory_gb": float(self._peak_memory_gb()),
+                    "proposal_stats": face_roi_proposal_stats,
+                    "refine_stats": face_roi_refine_stats,
+                })
+                if multistage_stats["fusion"]["stats"]:
+                    multistage_stats["fusion"]["stats"].update(face_fusion_stats)
+                else:
+                    multistage_stats["fusion"]["stats"] = face_fusion_stats
+            multistage_stats["fusion"]["runtime_sec"] = float(
+                runtime_stage_seconds.get("pose_face_controls_person_roi", 0.0)
+                + runtime_stage_seconds.get("pose_face_controls_face_roi", 0.0)
+            )
 
             face_images = []
+            face_source_frames = analysis_frames
+            face_source_shape = (analysis_height, analysis_width)
+            if face_roi_enabled and face_stage_frames is not None:
+                face_source_frames = face_stage_frames
+                face_source_shape = face_stage_shape
+            elif person_roi_enabled and person_stage_frames is not None:
+                face_source_frames = person_stage_frames
+                face_source_shape = person_stage_shape
             for idx, face_bbox_for_image in enumerate(face_bboxes):
                 x1, x2, y1, y2 = face_bbox_for_image
-                face_image = analysis_frames[idx][y1:y2, x1:x2]
+                if face_source_shape != (analysis_height, analysis_width):
+                    scale_x = face_source_shape[1] / analysis_width
+                    scale_y = face_source_shape[0] / analysis_height
+                    x1 = int(np.floor(x1 * scale_x))
+                    x2 = int(np.ceil(x2 * scale_x))
+                    y1 = int(np.floor(y1 * scale_y))
+                    y2 = int(np.ceil(y2 * scale_y))
+                    x1 = max(0, min(x1, face_source_shape[1] - 2))
+                    x2 = max(x1 + 2, min(x2, face_source_shape[1]))
+                    y1 = max(0, min(y1, face_source_shape[0] - 2))
+                    y2 = max(y1 + 2, min(y2, face_source_shape[0]))
+                face_image = face_source_frames[idx][y1:y2, x1:x2]
                 face_image = cv2.resize(face_image, (512, 512))
                 face_images.append(face_image)
-            runtime_stage_seconds["pose_face_controls"] = time.perf_counter() - pose_start
+            runtime_stage_seconds["pose_face_controls"] = float(
+                runtime_stage_seconds["pose_face_controls_global"]
+                + runtime_stage_seconds.get("pose_face_controls_person_roi", 0.0)
+                + runtime_stage_seconds.get("pose_face_controls_face_roi", 0.0)
+            )
 
             logger.info(f"Processing reference image: {refer_image_path}")
             reference_start = time.perf_counter()
@@ -936,13 +1179,20 @@ class ProcessPipeline():
                 analysis_shape=(analysis_height, analysis_width),
                 frame_count=len(export_frames),
                 fps=float(fps),
-                preprocess_runtime_profile=self.sam_runtime_config.get("profile_name"),
+                preprocess_runtime_profile=preprocess_runtime_profile,
             )
             runtime_stats["background"] = {
                 "mode": background_debug.get("background_mode"),
                 "stats": background_debug.get("stats", {}),
             }
+            runtime_stats["multistage"] = multistage_stats
             runtime_metrics["background_mode"] = background_debug.get("background_mode")
+            runtime_metrics["person_roi_coverage_ratio"] = float(
+                multistage_stats["person_roi_analysis"].get("proposal_stats", {}).get("coverage_ratio", 0.0)
+            )
+            runtime_metrics["face_roi_coverage_ratio"] = float(
+                multistage_stats["face_roi_analysis"].get("proposal_stats", {}).get("coverage_ratio", 0.0)
+            )
             outputs = {
                 "frame_count": len(export_frames),
                 "fps": float(fps),
@@ -967,6 +1217,7 @@ class ProcessPipeline():
                     "mode": background_debug.get("background_mode"),
                     "stats": background_debug.get("stats", {}),
                 },
+                "multistage": multistage_stats,
                 "sam_runtime": dict(self.sam_runtime_config),
                 "sam_apply_postprocessing": bool(self.sam_apply_postprocessing),
                 "sam_trace_dir": str(trace_dir) if trace_dir is not None else None,

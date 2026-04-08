@@ -98,8 +98,19 @@ def _write_summary(suite_dir: Path, payload: dict):
     (suite_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _build_preprocess_command(*, run_dir: Path, ckpt_path: str, video_path: str, reference_path: str):
-    return [
+def _build_preprocess_command(
+    *,
+    run_dir: Path,
+    ckpt_path: str,
+    video_path: str,
+    reference_path: str,
+    preprocess_runtime_profile: str,
+    bg_inpaint_mode: str,
+    multistage_preprocess_mode: str,
+    disable_person_roi_refine: bool,
+    disable_face_roi_refine: bool,
+):
+    command = [
         PYTHON,
         "-X",
         "faulthandler",
@@ -116,7 +127,7 @@ def _build_preprocess_command(*, run_dir: Path, ckpt_path: str, video_path: str,
         "--replace_flag",
         "--lossless_intermediate",
         "--bg_inpaint_mode",
-        "image",
+        bg_inpaint_mode,
         "--soft_mask_mode",
         "soft_band",
         "--reference_normalization_mode",
@@ -148,8 +159,10 @@ def _build_preprocess_command(*, run_dir: Path, ckpt_path: str, video_path: str,
         "3",
         "--sam_reprompt_interval",
         "0",
+        "--preprocess_runtime_profile",
+        preprocess_runtime_profile,
         "--sam_runtime_profile",
-        "h200_safe",
+        "h200_safe" if preprocess_runtime_profile == "h200_extreme" else preprocess_runtime_profile,
         "--no-sam_apply_postprocessing",
         "--no-sam_use_negative_points",
         "--sam_prompt_mode",
@@ -173,6 +186,13 @@ def _build_preprocess_command(*, run_dir: Path, ckpt_path: str, video_path: str,
         "--bg_temporal_smooth_strength",
         "0.1",
     ]
+    if multistage_preprocess_mode != "none":
+        command.extend(["--multistage_preprocess_mode", multistage_preprocess_mode])
+        if disable_person_roi_refine:
+            command.append("--disable_person_roi_refine")
+        if disable_face_roi_refine:
+            command.append("--disable_face_roi_refine")
+    return command
 
 
 def _build_generate_command(*, run_dir: Path, ckpt_dir: str, src_root_path: Path, boundary_refine_mode: str):
@@ -238,6 +258,11 @@ def main():
     parser.add_argument("--suite_name", type=str, default=None)
     parser.add_argument("--manifest", type=str, default=str(DEFAULT_MANIFEST))
     parser.add_argument("--gate_policy", type=str, default=str(DEFAULT_GATE_POLICY))
+    parser.add_argument("--preprocess_runtime_profile", choices=["h200_safe", "h200_aggressive", "h200_extreme"], default="h200_safe")
+    parser.add_argument("--bg_inpaint_mode", choices=["image", "video"], default="image")
+    parser.add_argument("--multistage_preprocess_mode", choices=["none", "h200_extreme"], default="none")
+    parser.add_argument("--disable_person_roi_refine", action="store_true", default=False)
+    parser.add_argument("--disable_face_roi_refine", action="store_true", default=False)
     args = parser.parse_args()
 
     manifest = _read_json(Path(args.manifest))
@@ -324,6 +349,11 @@ def main():
                 ckpt_path=shared["process_checkpoint"],
                 video_path=smoke_case["video_path"],
                 reference_path=shared["reference_image"],
+                preprocess_runtime_profile=args.preprocess_runtime_profile,
+                bg_inpaint_mode=args.bg_inpaint_mode,
+                multistage_preprocess_mode=args.multistage_preprocess_mode,
+                disable_person_roi_refine=args.disable_person_roi_refine,
+                disable_face_roi_refine=args.disable_face_roi_refine,
             ),
             suite_dir=suite_dir,
         )

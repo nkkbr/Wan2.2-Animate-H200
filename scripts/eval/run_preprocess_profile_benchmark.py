@@ -88,6 +88,36 @@ def _load_background_diff_stats(preprocess_dir: Path):
     }
 
 
+def _load_face_metrics(preprocess_dir: Path):
+    path = preprocess_dir / "face_bbox_curve.json"
+    if not path.exists():
+        return None
+    curve = _read_json(path)
+    frames = curve.get("frames", [])
+    centers = np.array([[f.get("center_x", 0.0), f.get("center_y", 0.0)] for f in frames], dtype=np.float32)
+    valid_points = np.array([f.get("valid_face_points", 0.0) for f in frames], dtype=np.float32)
+    center_step = np.linalg.norm(np.diff(centers, axis=0), axis=1) if len(centers) > 1 else np.zeros((0,), dtype=np.float32)
+    return {
+        "center_jitter_mean": float(center_step.mean()) if len(center_step) else 0.0,
+        "center_jitter_max": float(center_step.max()) if len(center_step) else 0.0,
+        "valid_face_points_mean": float(valid_points.mean()) if len(valid_points) else 0.0,
+    }
+
+
+def _load_pose_metrics(preprocess_dir: Path):
+    path = preprocess_dir / "pose_conf_curve.json"
+    if not path.exists():
+        return None
+    curve = _read_json(path)
+    frames = curve.get("frames", [])
+    smooth_body = np.array([f.get("smoothed_body_mean_conf", 0.0) for f in frames], dtype=np.float32)
+    body_delta = np.abs(np.diff(smooth_body)) if len(smooth_body) > 1 else np.zeros((0,), dtype=np.float32)
+    return {
+        "smoothed_body_mean_conf": float(smooth_body.mean()) if len(smooth_body) else 0.0,
+        "body_conf_delta_mean": float(body_delta.mean()) if len(body_delta) else 0.0,
+    }
+
+
 def _build_command(args, run_dir: Path, profile: str):
     command = [
         sys.executable,
@@ -137,6 +167,8 @@ def _summarize_case(run_dir: Path, profile: str, result: subprocess.CompletedPro
     contract = _run_contract_check(preprocess_dir) if metadata is not None else None
     soft_band_stats = _load_mask_np_stats(preprocess_dir, metadata or {}, "soft_band") if metadata is not None else None
     background_diff_stats = _load_background_diff_stats(preprocess_dir) if metadata is not None else None
+    face_metrics = _load_face_metrics(preprocess_dir) if metadata is not None else None
+    pose_metrics = _load_pose_metrics(preprocess_dir) if metadata is not None else None
     stage_entry = None
     if manifest is not None:
         entries = manifest.get("stages", {}).get("preprocess", [])
@@ -164,6 +196,8 @@ def _summarize_case(run_dir: Path, profile: str, result: subprocess.CompletedPro
         "mask_area_ratio": mask_area_ratio,
         "soft_band_stats": soft_band_stats,
         "background_diff_stats": background_diff_stats,
+        "face_metrics": face_metrics,
+        "pose_metrics": pose_metrics,
     }
     return summary
 
@@ -176,6 +210,11 @@ def _summary_row(case_name: str, summary: dict):
     mask_area_ratio = summary.get("mask_area_ratio") or {}
     soft_band_stats = summary.get("soft_band_stats") or {}
     background_diff_stats = summary.get("background_diff_stats") or {}
+    face_metrics = summary.get("face_metrics") or {}
+    pose_metrics = summary.get("pose_metrics") or {}
+    multistage = runtime_stats.get("multistage") or {}
+    person_roi = multistage.get("person_roi_analysis") or {}
+    face_roi = multistage.get("face_roi_analysis") or {}
     contract = summary.get("contract_check") or {}
     return {
         "case_name": case_name,
@@ -195,6 +234,12 @@ def _summary_row(case_name: str, summary: dict):
         "mask_area_ratio_std": mask_area_ratio.get("std"),
         "soft_band_mean": soft_band_stats.get("mean"),
         "background_diff_mean": background_diff_stats.get("mean"),
+        "face_center_jitter_mean": face_metrics.get("center_jitter_mean"),
+        "face_valid_points_mean": face_metrics.get("valid_face_points_mean"),
+        "pose_body_conf_delta_mean": pose_metrics.get("body_conf_delta_mean"),
+        "pose_smoothed_body_mean_conf": pose_metrics.get("smoothed_body_mean_conf"),
+        "person_roi_coverage_ratio": (person_roi.get("proposal_stats") or {}).get("coverage_ratio"),
+        "face_roi_coverage_ratio": (face_roi.get("proposal_stats") or {}).get("coverage_ratio"),
         "contract_passed": contract.get("passed"),
     }
 
@@ -207,9 +252,9 @@ def main():
     parser.add_argument(
         "--profile",
         action="append",
-        choices=["legacy_safe", "h200_safe", "h200_aggressive"],
+        choices=["legacy_safe", "h200_safe", "h200_aggressive", "h200_extreme"],
         default=None,
-        help="Preprocess runtime profile to benchmark. Can be repeated. Defaults to all three profiles.",
+        help="Preprocess runtime profile to benchmark. Can be repeated. Defaults to legacy_safe/h200_safe/h200_aggressive/h200_extreme.",
     )
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--resolution_area", type=int, nargs=2, default=[640, 360])
@@ -219,7 +264,7 @@ def main():
     parser.add_argument("--suite_name", type=str, default=None)
     args = parser.parse_args()
 
-    profiles = args.profile or ["legacy_safe", "h200_safe", "h200_aggressive"]
+    profiles = args.profile or ["legacy_safe", "h200_safe", "h200_aggressive", "h200_extreme"]
     suite_name = args.suite_name or f"preprocess_profile_benchmark_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
     suite_dir = REPO_ROOT / "runs" / suite_name
     suite_dir.mkdir(parents=True, exist_ok=True)

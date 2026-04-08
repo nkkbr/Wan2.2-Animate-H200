@@ -70,7 +70,7 @@ def _parse_args():
         "--preprocess_runtime_profile",
         type=str,
         default="legacy_safe",
-        choices=["legacy_safe", "h200_safe", "h200_aggressive"],
+        choices=["legacy_safe", "h200_safe", "h200_aggressive", "h200_extreme"],
         help="High-level preprocess runtime profile. This controls default SAM runtime, analysis resolution, chunking, prompting, and postprocessing settings unless explicitly overridden."
     )
     parser.add_argument(
@@ -92,6 +92,147 @@ def _parse_args():
         type=int,
         default=None,
         help="Optional minimum short side for the internal analysis resolution. Useful for H200 profiles that should preserve more detail than export resolution alone would provide."
+    )
+    parser.add_argument(
+        "--multistage_preprocess_mode",
+        type=str,
+        default="none",
+        choices=["none", "h200_extreme"],
+        help="Enable multistage preprocess refinement. 'none' keeps the current single-stage path. 'h200_extreme' adds person ROI and face ROI refinement layers."
+    )
+    parser.add_argument(
+        "--disable_person_roi_refine",
+        action="store_true",
+        default=False,
+        help="Disable the person ROI refinement layer while keeping the multistage framework active."
+    )
+    parser.add_argument(
+        "--disable_face_roi_refine",
+        action="store_true",
+        default=False,
+        help="Disable the face ROI refinement layer while keeping the multistage framework active."
+    )
+    parser.add_argument(
+        "--person_roi_stage_resolution_area",
+        type=int,
+        nargs=2,
+        default=None,
+        help="Optional analysis resolution [width, height] for the person ROI layer."
+    )
+    parser.add_argument(
+        "--person_roi_stage_min_short_side",
+        type=int,
+        default=None,
+        help="Optional minimum short side for the person ROI analysis stage."
+    )
+    parser.add_argument(
+        "--person_roi_expand_ratio",
+        type=float,
+        default=1.18,
+        help="Expansion ratio applied to the normalized person ROI proposal."
+    )
+    parser.add_argument(
+        "--person_roi_min_size_ratio",
+        type=float,
+        default=0.20,
+        help="Minimum normalized size enforced for person ROI proposals."
+    )
+    parser.add_argument(
+        "--person_roi_target_long_side",
+        type=int,
+        default=None,
+        help="Optional cap for the long side of person ROI crops before they are fed into the ROI pose rerun."
+    )
+    parser.add_argument(
+        "--person_roi_body_conf_thresh",
+        type=float,
+        default=0.35,
+        help="Body keypoint confidence threshold used to build person ROI proposals."
+    )
+    parser.add_argument(
+        "--person_roi_hand_conf_thresh",
+        type=float,
+        default=0.25,
+        help="Hand keypoint confidence threshold used to build person ROI proposals."
+    )
+    parser.add_argument(
+        "--person_roi_face_conf_thresh",
+        type=float,
+        default=0.35,
+        help="Face keypoint confidence threshold used to build person ROI proposals."
+    )
+    parser.add_argument(
+        "--person_roi_fuse_weight",
+        type=float,
+        default=0.72,
+        help="Weight assigned to refined person ROI coordinates when fusing them back into the global pose stream."
+    )
+    parser.add_argument(
+        "--person_roi_conf_margin",
+        type=float,
+        default=0.03,
+        help="Minimum confidence advantage required before a person ROI point is strongly preferred over the global point."
+    )
+    parser.add_argument(
+        "--face_roi_stage_resolution_area",
+        type=int,
+        nargs=2,
+        default=None,
+        help="Optional analysis resolution [width, height] for the face ROI layer."
+    )
+    parser.add_argument(
+        "--face_roi_stage_min_short_side",
+        type=int,
+        default=None,
+        help="Optional minimum short side for the face ROI analysis stage."
+    )
+    parser.add_argument(
+        "--face_roi_expand_ratio",
+        type=float,
+        default=1.65,
+        help="Expansion ratio applied to the normalized face ROI proposal."
+    )
+    parser.add_argument(
+        "--face_roi_min_size_ratio",
+        type=float,
+        default=0.12,
+        help="Minimum normalized size enforced for face ROI proposals."
+    )
+    parser.add_argument(
+        "--face_roi_target_long_side",
+        type=int,
+        default=None,
+        help="Optional cap for the long side of face ROI crops before they are fed into the ROI pose rerun."
+    )
+    parser.add_argument(
+        "--face_roi_conf_thresh",
+        type=float,
+        default=0.35,
+        help="Confidence threshold used when proposing face ROI boxes."
+    )
+    parser.add_argument(
+        "--face_roi_fuse_weight",
+        type=float,
+        default=0.86,
+        help="Weight assigned to refined face ROI coordinates when fusing them back into the global pose stream."
+    )
+    parser.add_argument(
+        "--face_roi_conf_margin",
+        type=float,
+        default=0.02,
+        help="Minimum confidence advantage required before a face ROI point is strongly preferred over the previous point."
+    )
+    parser.add_argument(
+        "--multistage_pose_extra_smooth",
+        type=float,
+        default=0.10,
+        help="Extra smoothing strength applied during multistage pose restabilization."
+    )
+    parser.add_argument(
+        "--multistage_face_bbox_extra_smooth",
+        type=float,
+        default=0.08,
+        help="Extra smoothing strength applied to face bbox stabilization after ROI reruns."
     )
     parser.add_argument(
         "--fps",
@@ -608,8 +749,20 @@ if __name__ == '__main__':
     assert len(args.resolution_area) == 2, "resolution_area should be a list of two integers [width, height]"
     if args.analysis_resolution_area is not None:
         assert len(args.analysis_resolution_area) == 2, "analysis_resolution_area should be a list of two integers [width, height]"
+    if args.person_roi_stage_resolution_area is not None:
+        assert len(args.person_roi_stage_resolution_area) == 2, "person_roi_stage_resolution_area should be [width, height]"
+    if args.face_roi_stage_resolution_area is not None:
+        assert len(args.face_roi_stage_resolution_area) == 2, "face_roi_stage_resolution_area should be [width, height]"
     if args.analysis_min_short_side is not None and args.analysis_min_short_side <= 0:
         raise ValueError("analysis_min_short_side must be > 0 when provided.")
+    if args.person_roi_stage_min_short_side is not None and args.person_roi_stage_min_short_side <= 0:
+        raise ValueError("person_roi_stage_min_short_side must be > 0 when provided.")
+    if args.face_roi_stage_min_short_side is not None and args.face_roi_stage_min_short_side <= 0:
+        raise ValueError("face_roi_stage_min_short_side must be > 0 when provided.")
+    if args.person_roi_target_long_side is not None and args.person_roi_target_long_side <= 0:
+        raise ValueError("person_roi_target_long_side must be > 0 when provided.")
+    if args.face_roi_target_long_side is not None and args.face_roi_target_long_side <= 0:
+        raise ValueError("face_roi_target_long_side must be > 0 when provided.")
     assert not args.use_flux or args.retarget_flag, "Image editing with FLUX can only be used when pose retargeting is enabled."
     assert args.ckpt_path is not None, "Please provide --ckpt_path."
     assert Path(args.ckpt_path).exists(), f"Checkpoint path does not exist: {args.ckpt_path}"
@@ -627,6 +780,16 @@ if __name__ == '__main__':
         raise ValueError("reference_structure_segment_clamp_min must be <= reference_structure_segment_clamp_max.")
     if args.reference_structure_width_budget_ratio <= 0 or args.reference_structure_height_budget_ratio <= 0:
         raise ValueError("reference_structure_width_budget_ratio and reference_structure_height_budget_ratio must be > 0.")
+    if args.person_roi_expand_ratio <= 0 or args.face_roi_expand_ratio <= 0:
+        raise ValueError("person_roi_expand_ratio and face_roi_expand_ratio must be > 0.")
+    if args.person_roi_min_size_ratio <= 0 or args.face_roi_min_size_ratio <= 0:
+        raise ValueError("person_roi_min_size_ratio and face_roi_min_size_ratio must be > 0.")
+    if not 0.0 <= float(args.person_roi_fuse_weight) <= 1.0:
+        raise ValueError("person_roi_fuse_weight must be in [0, 1].")
+    if not 0.0 <= float(args.face_roi_fuse_weight) <= 1.0:
+        raise ValueError("face_roi_fuse_weight must be in [0, 1].")
+    if args.multistage_preprocess_mode == "none" and (args.disable_person_roi_refine or args.disable_face_roi_refine):
+        raise ValueError("disable_person_roi_refine/disable_face_roi_refine are only meaningful when multistage_preprocess_mode is enabled.")
     if args.bg_video_window_radius < 1:
         raise ValueError("bg_video_window_radius must be >= 1.")
     if args.bg_video_min_visible_count < 1:
@@ -747,6 +910,30 @@ if __name__ == '__main__':
                                             reference_structure_segment_clamp_max=args.reference_structure_segment_clamp_max,
                                             reference_structure_width_budget_ratio=args.reference_structure_width_budget_ratio,
                                             reference_structure_height_budget_ratio=args.reference_structure_height_budget_ratio,
+                                            multistage_preprocess_mode=args.multistage_preprocess_mode,
+                                            disable_person_roi_refine=args.disable_person_roi_refine,
+                                            disable_face_roi_refine=args.disable_face_roi_refine,
+                                            person_roi_stage_resolution_area=args.person_roi_stage_resolution_area,
+                                            person_roi_stage_min_short_side=args.person_roi_stage_min_short_side,
+                                            person_roi_expand_ratio=args.person_roi_expand_ratio,
+                                            person_roi_min_size_ratio=args.person_roi_min_size_ratio,
+                                            person_roi_target_long_side=args.person_roi_target_long_side,
+                                            person_roi_body_conf_thresh=args.person_roi_body_conf_thresh,
+                                            person_roi_hand_conf_thresh=args.person_roi_hand_conf_thresh,
+                                            person_roi_face_conf_thresh=args.person_roi_face_conf_thresh,
+                                            person_roi_fuse_weight=args.person_roi_fuse_weight,
+                                            person_roi_conf_margin=args.person_roi_conf_margin,
+                                            face_roi_stage_resolution_area=args.face_roi_stage_resolution_area,
+                                            face_roi_stage_min_short_side=args.face_roi_stage_min_short_side,
+                                            face_roi_expand_ratio=args.face_roi_expand_ratio,
+                                            face_roi_min_size_ratio=args.face_roi_min_size_ratio,
+                                            face_roi_target_long_side=args.face_roi_target_long_side,
+                                            face_roi_conf_thresh=args.face_roi_conf_thresh,
+                                            face_roi_fuse_weight=args.face_roi_fuse_weight,
+                                            face_roi_conf_margin=args.face_roi_conf_margin,
+                                            multistage_pose_extra_smooth=args.multistage_pose_extra_smooth,
+                                            multistage_face_bbox_extra_smooth=args.multistage_face_bbox_extra_smooth,
+                                            preprocess_runtime_profile=args.preprocess_runtime_profile,
                                             iterations=args.iterations,
                                             k=args.k,
                                             w_len=args.w_len,
@@ -876,6 +1063,32 @@ if __name__ == '__main__':
             runtime_stats=pipeline_outputs.get("runtime_stats", {}),
             qa_outputs=pipeline_outputs.get("qa_outputs", {}),
         )
+        metadata["processing"]["multistage"] = {
+            "multistage_preprocess_mode": args.multistage_preprocess_mode,
+            "disable_person_roi_refine": args.disable_person_roi_refine,
+            "disable_face_roi_refine": args.disable_face_roi_refine,
+            "person_roi_stage_resolution_area": args.person_roi_stage_resolution_area,
+            "person_roi_stage_min_short_side": args.person_roi_stage_min_short_side,
+            "person_roi_expand_ratio": args.person_roi_expand_ratio,
+            "person_roi_min_size_ratio": args.person_roi_min_size_ratio,
+            "person_roi_target_long_side": args.person_roi_target_long_side,
+            "person_roi_body_conf_thresh": args.person_roi_body_conf_thresh,
+            "person_roi_hand_conf_thresh": args.person_roi_hand_conf_thresh,
+            "person_roi_face_conf_thresh": args.person_roi_face_conf_thresh,
+            "person_roi_fuse_weight": args.person_roi_fuse_weight,
+            "person_roi_conf_margin": args.person_roi_conf_margin,
+            "face_roi_stage_resolution_area": args.face_roi_stage_resolution_area,
+            "face_roi_stage_min_short_side": args.face_roi_stage_min_short_side,
+            "face_roi_expand_ratio": args.face_roi_expand_ratio,
+            "face_roi_min_size_ratio": args.face_roi_min_size_ratio,
+            "face_roi_target_long_side": args.face_roi_target_long_side,
+            "face_roi_conf_thresh": args.face_roi_conf_thresh,
+            "face_roi_fuse_weight": args.face_roi_fuse_weight,
+            "face_roi_conf_margin": args.face_roi_conf_margin,
+            "multistage_pose_extra_smooth": args.multistage_pose_extra_smooth,
+            "multistage_face_bbox_extra_smooth": args.multistage_face_bbox_extra_smooth,
+            "stats": pipeline_outputs.get("multistage", {}),
+        }
         metadata_path = write_preprocess_metadata(args.save_path, metadata)
         runtime_stats_path = None
         if pipeline_outputs.get("runtime_stats"):
