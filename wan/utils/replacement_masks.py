@@ -37,6 +37,9 @@ def compose_background_keep_mask(
     soft_band: torch.Tensor | np.ndarray | None = None,
     *,
     soft_alpha: torch.Tensor | np.ndarray | None = None,
+    detail_release_map: torch.Tensor | np.ndarray | None = None,
+    trimap_unknown_map: torch.Tensor | np.ndarray | None = None,
+    edge_detail_map: torch.Tensor | np.ndarray | None = None,
     background_keep_prior: torch.Tensor | np.ndarray | None = None,
     visible_support: torch.Tensor | np.ndarray | None = None,
     unresolved_region: torch.Tensor | np.ndarray | None = None,
@@ -56,7 +59,7 @@ def compose_background_keep_mask(
     background_keep = 1.0 - torch.clamp(person_mask, 0.0, 1.0)
     if mode == "hard":
         return torch.clamp(background_keep, 0.0, 1.0)
-    if conditioning_mode not in {"legacy", "rich"}:
+    if conditioning_mode not in {"legacy", "rich", "rich_v1"}:
         raise ValueError(f"Unsupported replacement conditioning mode: {conditioning_mode}")
 
     if background_keep_prior is not None:
@@ -83,7 +86,7 @@ def compose_background_keep_mask(
             background_keep = background_keep * (
                 1.0 - 0.75 * torch.clamp(unresolved_region.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
             )
-        if conditioning_mode == "rich":
+        if conditioning_mode in {"rich", "rich_v1"}:
             if uncertainty_map is not None:
                 if not isinstance(uncertainty_map, torch.Tensor):
                     uncertainty_map = torch.as_tensor(uncertainty_map, dtype=torch.float32)
@@ -121,13 +124,25 @@ def compose_background_keep_mask(
             soft_alpha = torch.as_tensor(soft_alpha, dtype=torch.float32)
         soft_alpha = torch.clamp(soft_alpha.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
         background_keep = torch.maximum(background_keep, 1.0 - soft_alpha)
+    if detail_release_map is not None:
+        if not isinstance(detail_release_map, torch.Tensor):
+            detail_release_map = torch.as_tensor(detail_release_map, dtype=torch.float32)
+        detail_release_map = torch.clamp(detail_release_map.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
+    if trimap_unknown_map is not None:
+        if not isinstance(trimap_unknown_map, torch.Tensor):
+            trimap_unknown_map = torch.as_tensor(trimap_unknown_map, dtype=torch.float32)
+        trimap_unknown_map = torch.clamp(trimap_unknown_map.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
+    if edge_detail_map is not None:
+        if not isinstance(edge_detail_map, torch.Tensor):
+            edge_detail_map = torch.as_tensor(edge_detail_map, dtype=torch.float32)
+        edge_detail_map = torch.clamp(edge_detail_map.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
     if soft_band is None:
         return torch.clamp(background_keep, 0.0, 1.0)
     if not isinstance(soft_band, torch.Tensor):
         soft_band = torch.as_tensor(soft_band, dtype=torch.float32)
     soft_band = soft_band.to(dtype=torch.float32, device=background_keep.device)
     boundary_strength = max(0.0, min(float(boundary_strength), 1.0))
-    if conditioning_mode == "rich":
+    if conditioning_mode in {"rich", "rich_v1"}:
         if uncertainty_map is not None:
             if not isinstance(uncertainty_map, torch.Tensor):
                 uncertainty_map = torch.as_tensor(uncertainty_map, dtype=torch.float32)
@@ -146,7 +161,17 @@ def compose_background_keep_mask(
             background_keep = background_keep * (
                 1.0 - 0.45 * torch.clamp(face_preserve.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
             )
+        if detail_release_map is not None:
+            background_keep = background_keep * (1.0 - 0.40 * detail_release_map)
+        if trimap_unknown_map is not None:
+            background_keep = background_keep * (1.0 - 0.18 * trimap_unknown_map)
+        if edge_detail_map is not None:
+            background_keep = background_keep * (1.0 - 0.10 * edge_detail_map)
         boundary_strength = boundary_strength * float(np.clip(structure_guard_strength, 0.0, 1.0))
+        if detail_release_map is not None:
+            boundary_strength = boundary_strength + 0.10 * detail_release_map
+        if trimap_unknown_map is not None:
+            boundary_strength = boundary_strength + 0.08 * trimap_unknown_map
     background_keep = background_keep - boundary_strength * torch.clamp(soft_band, 0.0, 1.0)
     return torch.clamp(background_keep, 0.0, 1.0)
 

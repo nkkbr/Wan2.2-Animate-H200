@@ -632,7 +632,7 @@ def _parse_args():
         "--matting_mode",
         type=str,
         default="heuristic",
-        choices=["none", "heuristic"],
+        choices=["none", "heuristic", "high_precision_v2"],
         help="Matting adapter mode used to derive soft alpha."
     )
     parser.add_argument(
@@ -670,6 +670,42 @@ def _parse_args():
         type=int,
         default=5,
         help="Blur kernel applied to the heuristic soft alpha."
+    )
+    parser.add_argument(
+        "--alpha_v2_detail_boost",
+        type=float,
+        default=0.28,
+        help="Detail preservation boost used by matting_mode=high_precision_v2."
+    )
+    parser.add_argument(
+        "--alpha_v2_shrink_strength",
+        type=float,
+        default=0.34,
+        help="Boundary contraction strength used by matting_mode=high_precision_v2."
+    )
+    parser.add_argument(
+        "--alpha_v2_hair_boost",
+        type=float,
+        default=0.42,
+        help="Hair-edge preservation boost used by matting_mode=high_precision_v2."
+    )
+    parser.add_argument(
+        "--alpha_v2_hard_threshold",
+        type=float,
+        default=0.68,
+        help="Alpha threshold used to derive refined_hard_foreground in matting_mode=high_precision_v2."
+    )
+    parser.add_argument(
+        "--alpha_v2_bilateral_sigma_color",
+        type=float,
+        default=0.12,
+        help="Bilateral sigmaColor used by matting_mode=high_precision_v2."
+    )
+    parser.add_argument(
+        "--alpha_v2_bilateral_sigma_space",
+        type=float,
+        default=5.0,
+        help="Bilateral sigmaSpace used by matting_mode=high_precision_v2."
     )
     parser.add_argument(
         "--bg_inpaint_mode",
@@ -1046,6 +1082,12 @@ if __name__ == '__main__':
                                             matting_trimap_inner_erode=args.matting_trimap_inner_erode,
                                             matting_trimap_outer_dilate=args.matting_trimap_outer_dilate,
                                             matting_blur_kernel=args.matting_blur_kernel,
+                                            alpha_v2_detail_boost=args.alpha_v2_detail_boost,
+                                            alpha_v2_shrink_strength=args.alpha_v2_shrink_strength,
+                                            alpha_v2_hair_boost=args.alpha_v2_hair_boost,
+                                            alpha_v2_hard_threshold=args.alpha_v2_hard_threshold,
+                                            alpha_v2_bilateral_sigma_color=args.alpha_v2_bilateral_sigma_color,
+                                            alpha_v2_bilateral_sigma_space=args.alpha_v2_bilateral_sigma_space,
                                             bg_inpaint_mode=args.bg_inpaint_mode,
                                             bg_inpaint_method=args.bg_inpaint_method,
                                             bg_inpaint_mask_expand=args.bg_inpaint_mask_expand,
@@ -1224,6 +1266,12 @@ if __name__ == '__main__':
                 "matting_trimap_inner_erode": args.matting_trimap_inner_erode,
                 "matting_trimap_outer_dilate": args.matting_trimap_outer_dilate,
                 "matting_blur_kernel": args.matting_blur_kernel,
+                "alpha_v2_detail_boost": args.alpha_v2_detail_boost,
+                "alpha_v2_shrink_strength": args.alpha_v2_shrink_strength,
+                "alpha_v2_hair_boost": args.alpha_v2_hair_boost,
+                "alpha_v2_hard_threshold": args.alpha_v2_hard_threshold,
+                "alpha_v2_bilateral_sigma_color": args.alpha_v2_bilateral_sigma_color,
+                "alpha_v2_bilateral_sigma_space": args.alpha_v2_bilateral_sigma_space,
                 "stats": pipeline_outputs.get("boundary_fusion", {}),
             },
             reference_settings={

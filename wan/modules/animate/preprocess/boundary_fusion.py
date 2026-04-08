@@ -102,6 +102,11 @@ def fuse_boundary_signals(
         if matting_output is not None and matting_output.get("support_region") is not None
         else zeros
     )
+    refined_hard_foreground = (
+        np.asarray(matting_output.get("refined_hard_foreground"), dtype=np.float32)
+        if matting_output is not None and matting_output.get("refined_hard_foreground") is not None
+        else None
+    )
 
     if mode == "heuristic":
         mode = "legacy"
@@ -109,6 +114,8 @@ def fuse_boundary_signals(
         raise ValueError(f"Unsupported boundary fusion mode: {mode}")
 
     hard_foreground = np.clip(hard_mask, 0.0, 1.0).astype(np.float32)
+    if refined_hard_foreground is not None:
+        hard_foreground = np.clip(refined_hard_foreground, 0.0, 1.0).astype(np.float32)
     fallback_soft_alpha = np.clip(hard_foreground + soft_band, 0.0, 1.0).astype(np.float32)
     if soft_alpha is None:
         soft_alpha = fallback_soft_alpha

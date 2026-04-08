@@ -62,7 +62,12 @@ from .utils.clip_blending import (
 from .utils.guidance import combine_animate_guidance_predictions
 from .utils.media_io import load_mask_artifact, load_person_mask_artifact, load_rgb_artifact, write_person_mask_artifact
 from .utils.replacement_masks import compose_background_keep_mask, derive_replacement_regions, resize_mask_volume
-from .utils.rich_conditioning import build_face_conditioning_maps, load_json_if_exists, summarize_reference_structure_guard
+from .utils.rich_conditioning import (
+    build_boundary_conditioning_maps,
+    build_face_conditioning_maps,
+    load_json_if_exists,
+    summarize_reference_structure_guard,
+)
 from .utils.temporal_handoff import (
     compose_temporal_handoff_latents,
     pack_overlap_tensor_to_latent_slots,
@@ -500,6 +505,13 @@ class WanAnimate:
         background_source_provenance_images,
         occlusion_band_images,
         uncertainty_map_images,
+        alpha_v2_images,
+        trimap_v2_images,
+        alpha_uncertainty_v2_images,
+        fine_boundary_mask_images,
+        hair_edge_mask_images,
+        alpha_confidence_images,
+        alpha_source_provenance_images,
         face_confidence_images,
         face_preserve_images,
         conditioning_mode,
@@ -563,10 +575,57 @@ class WanAnimate:
             torch.as_tensor(np.asarray(face_preserve_images), dtype=torch.float32)
             if face_preserve_images is not None else None
         )
+        boundary_conditioning = build_boundary_conditioning_maps(
+            soft_alpha=np.asarray(soft_alpha_images) if soft_alpha_images is not None else None,
+            alpha_v2=np.asarray(alpha_v2_images) if alpha_v2_images is not None else None,
+            trimap_v2=np.asarray(trimap_v2_images) if trimap_v2_images is not None else None,
+            boundary_band=np.asarray(boundary_band_images) if boundary_band_images is not None else (
+                np.asarray(soft_band_images) if soft_band_images is not None else None
+            ),
+            fine_boundary_mask=np.asarray(fine_boundary_mask_images) if fine_boundary_mask_images is not None else None,
+            hair_edge_mask=np.asarray(hair_edge_mask_images) if hair_edge_mask_images is not None else None,
+            alpha_uncertainty_v2=(
+                np.asarray(alpha_uncertainty_v2_images) if alpha_uncertainty_v2_images is not None else (
+                    np.asarray(uncertainty_map_images) if uncertainty_map_images is not None else None
+                )
+            ),
+            alpha_confidence=np.asarray(alpha_confidence_images) if alpha_confidence_images is not None else None,
+            alpha_source_provenance=np.asarray(alpha_source_provenance_images) if alpha_source_provenance_images is not None else None,
+            uncertainty_map=np.asarray(uncertainty_map_images) if uncertainty_map_images is not None else None,
+            occlusion_band=np.asarray(occlusion_band_images) if occlusion_band_images is not None else None,
+        )
+        if conditioning_mode in {"rich", "rich_v1"} and boundary_conditioning["conditioning_soft_alpha"] is not None:
+            soft_alpha = torch.as_tensor(
+                boundary_conditioning["conditioning_soft_alpha"],
+                dtype=torch.float32,
+            )
+            boundary_band = torch.as_tensor(
+                boundary_conditioning["conditioning_boundary_band"],
+                dtype=torch.float32,
+            )
+            detail_release_map = torch.as_tensor(
+                boundary_conditioning["detail_release_map"],
+                dtype=torch.float32,
+            )
+            trimap_unknown_map = torch.as_tensor(
+                boundary_conditioning["trimap_unknown_map"],
+                dtype=torch.float32,
+            )
+            edge_detail_map = torch.as_tensor(
+                boundary_conditioning["edge_detail_map"],
+                dtype=torch.float32,
+            )
+        else:
+            detail_release_map = None
+            trimap_unknown_map = None
+            edge_detail_map = None
         background_keep = compose_background_keep_mask(
             hard_foreground,
             soft_band=boundary_band,
             soft_alpha=soft_alpha,
+            detail_release_map=detail_release_map,
+            trimap_unknown_map=trimap_unknown_map,
+            edge_detail_map=edge_detail_map,
             background_keep_prior=background_keep_prior,
             visible_support=visible_support,
             unresolved_region=unresolved_region,
@@ -624,6 +683,10 @@ class WanAnimate:
             "uncertainty_map": uncertainty_map,
             "face_confidence_map": face_confidence_map,
             "face_preserve_map": face_preserve_map,
+            "detail_release_map": detail_release_map,
+            "trimap_unknown_map": trimap_unknown_map,
+            "edge_detail_map": edge_detail_map,
+            "boundary_conditioning_summary": boundary_conditioning["summary"],
             "conditioning_mode": conditioning_mode,
             "structure_guard_strength": float(structure_guard_strength),
             "background_keep": background_keep,
@@ -680,6 +743,12 @@ class WanAnimate:
             mask_artifacts["face_confidence_map"] = replacement_masks["face_confidence_map"][:real_frame_len].cpu().numpy()
         if replacement_masks["face_preserve_map"] is not None:
             mask_artifacts["face_preserve_map"] = replacement_masks["face_preserve_map"][:real_frame_len].cpu().numpy()
+        if replacement_masks["detail_release_map"] is not None:
+            mask_artifacts["detail_release_map"] = replacement_masks["detail_release_map"][:real_frame_len].cpu().numpy()
+        if replacement_masks["trimap_unknown_map"] is not None:
+            mask_artifacts["trimap_unknown_map"] = replacement_masks["trimap_unknown_map"][:real_frame_len].cpu().numpy()
+        if replacement_masks["edge_detail_map"] is not None:
+            mask_artifacts["edge_detail_map"] = replacement_masks["edge_detail_map"][:real_frame_len].cpu().numpy()
         if replacement_masks["soft_band_latent"] is not None:
             mask_artifacts["latent_soft_band"] = replacement_masks["soft_band_latent"][:real_frame_len].cpu().numpy()
         if replacement_masks["soft_alpha_latent"] is not None:
@@ -935,10 +1004,12 @@ class WanAnimate:
             raise ValueError(
                 f"temporal_handoff_strength must be in [0, 1]. Got {temporal_handoff_strength}."
             )
-        if replacement_conditioning_mode not in {"legacy", "rich"}:
+        if replacement_conditioning_mode not in {"legacy", "rich", "rich_v1"}:
             raise ValueError(
                 f"Unsupported replacement_conditioning_mode: {replacement_conditioning_mode}"
             )
+        if replacement_conditioning_mode == "rich":
+            replacement_conditioning_mode = "rich_v1"
         if boundary_refine_mode not in {"none", "deterministic", "v2"}:
             raise ValueError(f"Unsupported boundary_refine_mode: {boundary_refine_mode}")
         if not 0.0 <= float(boundary_refine_strength) <= 1.0:
@@ -1028,6 +1099,13 @@ class WanAnimate:
         background_source_provenance_images = None
         occlusion_band_images = None
         uncertainty_map_images = None
+        alpha_v2_images = None
+        trimap_v2_images = None
+        alpha_uncertainty_v2_images = None
+        fine_boundary_mask_images = None
+        hair_edge_mask_images = None
+        alpha_confidence_images = None
+        alpha_source_provenance_images = None
         face_alpha_conditioning_images = None
         face_uncertainty_conditioning_images = None
         face_bbox_curve_data = None
@@ -1084,6 +1162,41 @@ class WanAnimate:
                     artifacts["uncertainty_map"]["path"],
                     artifacts["uncertainty_map"].get("format"),
                 )
+            if "alpha_v2" in artifacts:
+                alpha_v2_images = load_mask_artifact(
+                    artifacts["alpha_v2"]["path"],
+                    artifacts["alpha_v2"].get("format"),
+                )
+            if "trimap_v2" in artifacts:
+                trimap_v2_images = load_mask_artifact(
+                    artifacts["trimap_v2"]["path"],
+                    artifacts["trimap_v2"].get("format"),
+                )
+            if "alpha_uncertainty_v2" in artifacts:
+                alpha_uncertainty_v2_images = load_mask_artifact(
+                    artifacts["alpha_uncertainty_v2"]["path"],
+                    artifacts["alpha_uncertainty_v2"].get("format"),
+                )
+            if "fine_boundary_mask" in artifacts:
+                fine_boundary_mask_images = load_mask_artifact(
+                    artifacts["fine_boundary_mask"]["path"],
+                    artifacts["fine_boundary_mask"].get("format"),
+                )
+            if "hair_edge_mask" in artifacts:
+                hair_edge_mask_images = load_mask_artifact(
+                    artifacts["hair_edge_mask"]["path"],
+                    artifacts["hair_edge_mask"].get("format"),
+                )
+            if "alpha_confidence_v2" in artifacts:
+                alpha_confidence_images = load_mask_artifact(
+                    artifacts["alpha_confidence_v2"]["path"],
+                    artifacts["alpha_confidence_v2"].get("format"),
+                )
+            if "alpha_source_provenance_v2" in artifacts:
+                alpha_source_provenance_images = load_mask_artifact(
+                    artifacts["alpha_source_provenance_v2"]["path"],
+                    artifacts["alpha_source_provenance_v2"].get("format"),
+                )
             if "face_alpha" in artifacts:
                 face_alpha_conditioning_images = load_mask_artifact(
                     artifacts["face_alpha"]["path"],
@@ -1117,6 +1230,13 @@ class WanAnimate:
                 background_source_provenance_images=background_source_provenance_images,
                 occlusion_band_images=occlusion_band_images,
                 uncertainty_map_images=uncertainty_map_images,
+                alpha_v2_images=alpha_v2_images,
+                trimap_v2_images=trimap_v2_images,
+                alpha_uncertainty_v2_images=alpha_uncertainty_v2_images,
+                fine_boundary_mask_images=fine_boundary_mask_images,
+                hair_edge_mask_images=hair_edge_mask_images,
+                alpha_confidence_images=alpha_confidence_images,
+                alpha_source_provenance_images=alpha_source_provenance_images,
             )
             bg_images = self.inputs_padding(bg_images, target_len)
             person_mask_images = self.inputs_padding(person_mask_images, target_len)
@@ -1142,6 +1262,20 @@ class WanAnimate:
                 occlusion_band_images = self.inputs_padding(occlusion_band_images, target_len)
             if uncertainty_map_images is not None:
                 uncertainty_map_images = self.inputs_padding(uncertainty_map_images, target_len)
+            if alpha_v2_images is not None:
+                alpha_v2_images = self.inputs_padding(alpha_v2_images, target_len)
+            if trimap_v2_images is not None:
+                trimap_v2_images = self.inputs_padding(trimap_v2_images, target_len)
+            if alpha_uncertainty_v2_images is not None:
+                alpha_uncertainty_v2_images = self.inputs_padding(alpha_uncertainty_v2_images, target_len)
+            if fine_boundary_mask_images is not None:
+                fine_boundary_mask_images = self.inputs_padding(fine_boundary_mask_images, target_len)
+            if hair_edge_mask_images is not None:
+                hair_edge_mask_images = self.inputs_padding(hair_edge_mask_images, target_len)
+            if alpha_confidence_images is not None:
+                alpha_confidence_images = self.inputs_padding(alpha_confidence_images, target_len)
+            if alpha_source_provenance_images is not None:
+                alpha_source_provenance_images = self.inputs_padding(alpha_source_provenance_images, target_len)
             if face_alpha_conditioning_images is not None:
                 face_alpha_conditioning_images = self.inputs_padding(face_alpha_conditioning_images, target_len)
             if face_uncertainty_conditioning_images is not None:
@@ -1212,6 +1346,21 @@ class WanAnimate:
                 ),
                 occlusion_band_images=np.asarray(occlusion_band_images) if occlusion_band_images is not None else None,
                 uncertainty_map_images=np.asarray(uncertainty_map_images) if uncertainty_map_images is not None else None,
+                alpha_v2_images=np.asarray(alpha_v2_images) if alpha_v2_images is not None else None,
+                trimap_v2_images=np.asarray(trimap_v2_images) if trimap_v2_images is not None else None,
+                alpha_uncertainty_v2_images=(
+                    np.asarray(alpha_uncertainty_v2_images) if alpha_uncertainty_v2_images is not None else None
+                ),
+                fine_boundary_mask_images=(
+                    np.asarray(fine_boundary_mask_images) if fine_boundary_mask_images is not None else None
+                ),
+                hair_edge_mask_images=np.asarray(hair_edge_mask_images) if hair_edge_mask_images is not None else None,
+                alpha_confidence_images=(
+                    np.asarray(alpha_confidence_images) if alpha_confidence_images is not None else None
+                ),
+                alpha_source_provenance_images=(
+                    np.asarray(alpha_source_provenance_images) if alpha_source_provenance_images is not None else None
+                ),
                 face_confidence_images=(
                     face_conditioning["face_confidence_map"] if face_conditioning is not None else None
                 ),
@@ -1293,6 +1442,10 @@ class WanAnimate:
             "face_uncertainty_available": bool(preprocess_metadata and "face_uncertainty" in preprocess_metadata.get("src_files", {})),
             "face_conditioning_map_available": bool(face_conditioning and face_conditioning.get("summary", {}).get("available")) if replace_flag else False,
             "face_conditioning_summary": face_conditioning.get("summary") if replace_flag and face_conditioning is not None else None,
+            "boundary_conditioning_summary": (
+                replacement_masks.get("boundary_conditioning_summary")
+                if replace_flag and replacement_masks is not None else None
+            ),
             "pose_tracks_available": bool(preprocess_metadata and "pose_tracks" in preprocess_metadata.get("src_files", {})),
             "limb_tracks_available": bool(preprocess_metadata and "limb_tracks" in preprocess_metadata.get("src_files", {})),
             "hand_tracks_available": bool(preprocess_metadata and "hand_tracks" in preprocess_metadata.get("src_files", {})),

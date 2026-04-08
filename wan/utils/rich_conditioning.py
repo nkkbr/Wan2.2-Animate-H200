@@ -125,3 +125,124 @@ def summarize_reference_structure_guard(preprocess_metadata: dict | None) -> dic
         "max_segment_scale_deviation": float(max_deviation),
         "applied_segment_scales": segment_scales,
     }
+
+
+def build_boundary_conditioning_maps(
+    *,
+    soft_alpha: np.ndarray | None,
+    alpha_v2: np.ndarray | None,
+    trimap_v2: np.ndarray | None,
+    boundary_band: np.ndarray | None,
+    fine_boundary_mask: np.ndarray | None,
+    hair_edge_mask: np.ndarray | None,
+    alpha_uncertainty_v2: np.ndarray | None,
+    alpha_confidence: np.ndarray | None,
+    alpha_source_provenance: np.ndarray | None,
+    uncertainty_map: np.ndarray | None,
+    occlusion_band: np.ndarray | None,
+) -> dict:
+    base_alpha = None
+    if soft_alpha is not None:
+        base_alpha = np.clip(np.asarray(soft_alpha, dtype=np.float32), 0.0, 1.0)
+    elif alpha_v2 is not None:
+        base_alpha = np.clip(np.asarray(alpha_v2, dtype=np.float32), 0.0, 1.0)
+    else:
+        return {
+            "conditioning_soft_alpha": None,
+            "conditioning_boundary_band": None,
+            "detail_release_map": None,
+            "trimap_unknown_map": None,
+            "edge_detail_map": None,
+            "summary": {
+                "available": False,
+                "detail_release_mean": None,
+                "trimap_unknown_mean": None,
+                "edge_detail_mean": None,
+                "conditioning_alpha_delta_mean": None,
+            },
+        }
+
+    alpha_v2 = base_alpha if alpha_v2 is None else np.clip(np.asarray(alpha_v2, dtype=np.float32), 0.0, 1.0)
+    boundary_band = np.zeros_like(base_alpha, dtype=np.float32) if boundary_band is None else np.clip(np.asarray(boundary_band, dtype=np.float32), 0.0, 1.0)
+    fine_boundary_mask = np.zeros_like(base_alpha, dtype=np.float32) if fine_boundary_mask is None else np.clip(np.asarray(fine_boundary_mask, dtype=np.float32), 0.0, 1.0)
+    hair_edge_mask = np.zeros_like(base_alpha, dtype=np.float32) if hair_edge_mask is None else np.clip(np.asarray(hair_edge_mask, dtype=np.float32), 0.0, 1.0)
+    alpha_uncertainty_v2 = np.zeros_like(base_alpha, dtype=np.float32) if alpha_uncertainty_v2 is None else np.clip(np.asarray(alpha_uncertainty_v2, dtype=np.float32), 0.0, 1.0)
+    uncertainty_map = np.zeros_like(base_alpha, dtype=np.float32) if uncertainty_map is None else np.clip(np.asarray(uncertainty_map, dtype=np.float32), 0.0, 1.0)
+    occlusion_band = np.zeros_like(base_alpha, dtype=np.float32) if occlusion_band is None else np.clip(np.asarray(occlusion_band, dtype=np.float32), 0.0, 1.0)
+
+    if alpha_confidence is None:
+        alpha_confidence = np.clip(1.0 - alpha_uncertainty_v2, 0.0, 1.0).astype(np.float32)
+    else:
+        alpha_confidence = np.clip(np.asarray(alpha_confidence, dtype=np.float32), 0.0, 1.0)
+
+    if trimap_v2 is None:
+        trimap_unknown_map = np.zeros_like(base_alpha, dtype=np.float32)
+    else:
+        trimap_v2 = np.asarray(trimap_v2, dtype=np.float32)
+        trimap_unknown_map = (np.abs(trimap_v2 - 0.5) <= 0.25).astype(np.float32)
+
+    if alpha_source_provenance is None:
+        hair_provenance = np.zeros_like(base_alpha, dtype=np.float32)
+        boundary_provenance = np.zeros_like(base_alpha, dtype=np.float32)
+    else:
+        alpha_source_provenance = np.asarray(alpha_source_provenance, dtype=np.float32)
+        hair_provenance = (alpha_source_provenance >= 0.75).astype(np.float32)
+        boundary_provenance = (alpha_source_provenance >= 0.25).astype(np.float32)
+
+    edge_detail_map = np.clip(
+        np.maximum.reduce([
+            boundary_band,
+            0.80 * fine_boundary_mask,
+            1.10 * hair_edge_mask,
+            0.45 * trimap_unknown_map,
+            0.35 * occlusion_band,
+        ]),
+        0.0,
+        1.0,
+    ).astype(np.float32)
+
+    detail_release_map = np.clip(
+        edge_detail_map
+        * (0.45 + 0.55 * alpha_confidence)
+        * (1.0 - 0.35 * np.maximum(alpha_uncertainty_v2, uncertainty_map)),
+        0.0,
+        1.0,
+    ).astype(np.float32)
+
+    conditioning_boundary_band = np.clip(
+        np.maximum.reduce([
+            boundary_band,
+            0.55 * trimap_unknown_map,
+            0.80 * fine_boundary_mask,
+            1.05 * hair_edge_mask,
+            0.35 * occlusion_band,
+        ]),
+        0.0,
+        1.0,
+    ).astype(np.float32)
+
+    alpha_delta = np.clip(alpha_v2 - base_alpha, -0.05, 0.05).astype(np.float32)
+    delta_gate = np.clip(
+        0.35 * detail_release_map
+        + 0.25 * trimap_unknown_map
+        + 0.20 * hair_provenance
+        + 0.20 * boundary_provenance,
+        0.0,
+        1.0,
+    ).astype(np.float32)
+    conditioning_soft_alpha = np.clip(base_alpha + alpha_delta * delta_gate, 0.0, 1.0).astype(np.float32)
+
+    return {
+        "conditioning_soft_alpha": conditioning_soft_alpha,
+        "conditioning_boundary_band": conditioning_boundary_band,
+        "detail_release_map": detail_release_map,
+        "trimap_unknown_map": trimap_unknown_map.astype(np.float32),
+        "edge_detail_map": edge_detail_map.astype(np.float32),
+        "summary": {
+            "available": True,
+            "detail_release_mean": float(detail_release_map.mean()),
+            "trimap_unknown_mean": float(trimap_unknown_map.mean()),
+            "edge_detail_mean": float(edge_detail_map.mean()),
+            "conditioning_alpha_delta_mean": float(np.abs(conditioning_soft_alpha - base_alpha).mean()),
+        },
+    }

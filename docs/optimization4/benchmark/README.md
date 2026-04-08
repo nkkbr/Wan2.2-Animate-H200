@@ -24,6 +24,10 @@
   - Step 01 的 gate 判定规则
 - `01-edge-labeled-mini-benchmark-and-gates-findings.md`
   - Step 01 的正式结论与 baseline 指标
+- `02-high-quality-alpha-matting-upgrade-findings.md`
+  - Step 02 的正式结论与三轮 alpha / matting AB 结果
+- `03-rich-boundary-signal-core-conditioning-findings.md`
+  - Step 03 的正式结论与三轮 generate-side rich conditioning AB 结果
 
 
 ## 3. 关键脚本
@@ -60,7 +64,37 @@ python scripts/eval/run_optimization4_validation_suite.py \
 - 这样可以让 Step 01 的 gate 更稳定、成本更可控
 - 如果后续步骤明确需要验证“当前代码重新跑出的 preprocess”是否仍然过关，再显式使用 `--rerun_baseline_preprocess`
 
-### 3.4 生成 gate
+### 3.4 计算 alpha / matting 真值指标
+
+```bash
+python scripts/eval/compute_alpha_precision_metrics.py \
+  --dataset_dir runs/optimization4_step01_core_v2/edge_mini_set \
+  --prediction_preprocess_dir runs/<step02_run>/preprocess \
+  --output_json runs/<step02_run>/metrics/alpha_precision_metrics.json
+```
+
+### 3.5 synthetic alpha contract check
+
+```bash
+python scripts/eval/check_alpha_matting_upgrade.py
+```
+
+### 3.6 运行 Step 03 rich boundary conditioning AB
+
+```bash
+python scripts/eval/run_optimization4_rich_conditioning_benchmark.py \
+  --suite_name optimization4_step03_round1_ab
+```
+
+### 3.7 评估 Step 03 gate
+
+```bash
+python scripts/eval/evaluate_optimization4_rich_conditioning_benchmark.py \
+  --summary_json runs/optimization4_step03_round1_ab/summary.json \
+  --output_json runs/optimization4_step03_round1_ab/gate_result.json
+```
+
+### 3.8 生成 Step 01 gate
 
 ```bash
 python scripts/eval/summarize_optimization4_validation.py \

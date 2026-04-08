@@ -137,8 +137,8 @@ def _validate_args(args):
         assert 0.0 <= args.replacement_transition_low < args.replacement_transition_high <= 1.0, (
             "--replacement_transition_low and --replacement_transition_high must satisfy 0 <= low < high <= 1."
         )
-        assert args.replacement_conditioning_mode in {"legacy", "rich"}, (
-            "--replacement_conditioning_mode must be one of: legacy, rich."
+        assert args.replacement_conditioning_mode in {"legacy", "rich", "rich_v1"}, (
+            "--replacement_conditioning_mode must be one of: legacy, rich, rich_v1."
         )
         assert args.boundary_refine_mode in {"none", "deterministic", "v2"}, (
             "--boundary_refine_mode must be one of: none, deterministic, v2."
@@ -445,8 +445,8 @@ def _parse_args():
         "--replacement_conditioning_mode",
         type=str,
         default="legacy",
-        choices=["legacy", "rich"],
-        help="How Wan-Animate replacement consumes richer preprocess signals. 'rich' uses uncertainty/occlusion/background confidence/face preservation maps."
+        choices=["legacy", "rich", "rich_v1"],
+        help="How Wan-Animate replacement consumes richer preprocess signals. 'rich_v1' uses alpha_v2/trimap/fine-boundary/hair-edge plus uncertainty/occlusion/background confidence/face preservation maps. 'rich' is kept as a legacy alias."
     )
     parser.add_argument(
         "--replacement_mask_downsample_mode",

@@ -18,6 +18,13 @@ UNRESOLVED_REGION_SEMANTICS = "background_unresolved_region"
 BACKGROUND_CONFIDENCE_SEMANTICS = "background_confidence"
 BACKGROUND_SOURCE_PROVENANCE_SEMANTICS = "background_source_provenance"
 SOFT_ALPHA_SEMANTICS = "soft_alpha"
+ALPHA_V2_SEMANTICS = "alpha_v2"
+TRIMAP_V2_SEMANTICS = "trimap_v2"
+ALPHA_UNCERTAINTY_V2_SEMANTICS = "alpha_uncertainty_v2"
+FINE_BOUNDARY_MASK_SEMANTICS = "fine_boundary_mask"
+HAIR_EDGE_MASK_SEMANTICS = "hair_edge_mask"
+ALPHA_CONFIDENCE_SEMANTICS = "alpha_confidence_v2"
+ALPHA_SOURCE_PROVENANCE_SEMANTICS = "alpha_source_provenance_v2"
 SOFT_BAND_SEMANTICS = "boundary_transition_band"
 BOUNDARY_BAND_SEMANTICS = SOFT_BAND_SEMANTICS
 OCCLUSION_BAND_SEMANTICS = "occlusion_band"
@@ -331,6 +338,41 @@ def validate_preprocess_metadata(metadata: dict, src_root_path: str | Path) -> N
                 src_files["soft_alpha"].get("mask_semantics") == SOFT_ALPHA_SEMANTICS,
                 "soft_alpha artifact semantics mismatch.",
             )
+        if "alpha_v2" in src_files:
+            _require(
+                src_files["alpha_v2"].get("mask_semantics") == ALPHA_V2_SEMANTICS,
+                "alpha_v2 artifact semantics mismatch.",
+            )
+        if "trimap_v2" in src_files:
+            _require(
+                src_files["trimap_v2"].get("mask_semantics") == TRIMAP_V2_SEMANTICS,
+                "trimap_v2 artifact semantics mismatch.",
+            )
+        if "alpha_uncertainty_v2" in src_files:
+            _require(
+                src_files["alpha_uncertainty_v2"].get("mask_semantics") == ALPHA_UNCERTAINTY_V2_SEMANTICS,
+                "alpha_uncertainty_v2 artifact semantics mismatch.",
+            )
+        if "fine_boundary_mask" in src_files:
+            _require(
+                src_files["fine_boundary_mask"].get("mask_semantics") == FINE_BOUNDARY_MASK_SEMANTICS,
+                "fine_boundary_mask artifact semantics mismatch.",
+            )
+        if "hair_edge_mask" in src_files:
+            _require(
+                src_files["hair_edge_mask"].get("mask_semantics") == HAIR_EDGE_MASK_SEMANTICS,
+                "hair_edge_mask artifact semantics mismatch.",
+            )
+        if "alpha_confidence_v2" in src_files:
+            _require(
+                src_files["alpha_confidence_v2"].get("mask_semantics") == ALPHA_CONFIDENCE_SEMANTICS,
+                "alpha_confidence_v2 artifact semantics mismatch.",
+            )
+        if "alpha_source_provenance_v2" in src_files:
+            _require(
+                src_files["alpha_source_provenance_v2"].get("mask_semantics") == ALPHA_SOURCE_PROVENANCE_SEMANTICS,
+                "alpha_source_provenance_v2 artifact semantics mismatch.",
+            )
         if "boundary_band" in src_files:
             _require(
                 src_files["boundary_band"].get("mask_semantics") == BOUNDARY_BAND_SEMANTICS,
@@ -487,6 +529,13 @@ def validate_loaded_preprocess_bundle(
     background_source_provenance_images: np.ndarray | None = None,
     occlusion_band_images: np.ndarray | None = None,
     uncertainty_map_images: np.ndarray | None = None,
+    alpha_v2_images: np.ndarray | None = None,
+    trimap_v2_images: np.ndarray | None = None,
+    alpha_uncertainty_v2_images: np.ndarray | None = None,
+    fine_boundary_mask_images: np.ndarray | None = None,
+    hair_edge_mask_images: np.ndarray | None = None,
+    alpha_confidence_images: np.ndarray | None = None,
+    alpha_source_provenance_images: np.ndarray | None = None,
 ) -> None:
     validate_rgb_video("conditioning frames", cond_images)
     validate_rgb_video("face frames", face_images)
@@ -576,6 +625,48 @@ def validate_loaded_preprocess_bundle(
                  f"Uncertainty map frame count {uncertainty_map_images.shape[0]} does not match pose frame count {frame_count}.")
         _require(uncertainty_map_images.shape[1:3] == (cond_height, cond_width),
                  "Uncertainty map size must match pose video size.")
+    if alpha_v2_images is not None:
+        validate_person_mask_frames("alpha_v2 frames", alpha_v2_images)
+        _require(alpha_v2_images.shape[0] == frame_count,
+                 f"alpha_v2 frame count {alpha_v2_images.shape[0]} does not match pose frame count {frame_count}.")
+        _require(alpha_v2_images.shape[1:3] == (cond_height, cond_width),
+                 "alpha_v2 size must match pose video size.")
+    if trimap_v2_images is not None:
+        validate_person_mask_frames("trimap_v2 frames", trimap_v2_images)
+        _require(trimap_v2_images.shape[0] == frame_count,
+                 f"trimap_v2 frame count {trimap_v2_images.shape[0]} does not match pose frame count {frame_count}.")
+        _require(trimap_v2_images.shape[1:3] == (cond_height, cond_width),
+                 "trimap_v2 size must match pose video size.")
+    if alpha_uncertainty_v2_images is not None:
+        validate_person_mask_frames("alpha uncertainty v2 frames", alpha_uncertainty_v2_images)
+        _require(alpha_uncertainty_v2_images.shape[0] == frame_count,
+                 f"alpha uncertainty v2 frame count {alpha_uncertainty_v2_images.shape[0]} does not match pose frame count {frame_count}.")
+        _require(alpha_uncertainty_v2_images.shape[1:3] == (cond_height, cond_width),
+                 "alpha uncertainty v2 size must match pose video size.")
+    if fine_boundary_mask_images is not None:
+        validate_person_mask_frames("fine boundary mask frames", fine_boundary_mask_images)
+        _require(fine_boundary_mask_images.shape[0] == frame_count,
+                 f"fine boundary mask frame count {fine_boundary_mask_images.shape[0]} does not match pose frame count {frame_count}.")
+        _require(fine_boundary_mask_images.shape[1:3] == (cond_height, cond_width),
+                 "fine boundary mask size must match pose video size.")
+    if hair_edge_mask_images is not None:
+        validate_person_mask_frames("hair edge mask frames", hair_edge_mask_images)
+        _require(hair_edge_mask_images.shape[0] == frame_count,
+                 f"hair edge mask frame count {hair_edge_mask_images.shape[0]} does not match pose frame count {frame_count}.")
+        _require(hair_edge_mask_images.shape[1:3] == (cond_height, cond_width),
+                 "hair edge mask size must match pose video size.")
+    if alpha_confidence_images is not None:
+        validate_person_mask_frames("alpha confidence frames", alpha_confidence_images)
+        _require(alpha_confidence_images.shape[0] == frame_count,
+                 f"alpha confidence frame count {alpha_confidence_images.shape[0]} does not match pose frame count {frame_count}.")
+        _require(alpha_confidence_images.shape[1:3] == (cond_height, cond_width),
+                 "alpha confidence size must match pose video size.")
+    if alpha_source_provenance_images is not None:
+        validate_person_mask_frames("alpha source provenance frames", alpha_source_provenance_images)
+        _require(alpha_source_provenance_images.shape[0] == frame_count,
+                 f"alpha source provenance frame count {alpha_source_provenance_images.shape[0]} does not match pose frame count {frame_count}.")
+        _require(alpha_source_provenance_images.shape[1:3] == (cond_height, cond_width),
+                 "alpha source provenance size must match pose video size.")
 
     if metadata is None:
         return
