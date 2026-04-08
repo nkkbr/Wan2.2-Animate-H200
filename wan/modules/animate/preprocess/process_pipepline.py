@@ -110,6 +110,11 @@ from wan.utils.animate_contract import (
     HAIR_EDGE_MASK_SEMANTICS,
     ALPHA_CONFIDENCE_SEMANTICS,
     ALPHA_SOURCE_PROVENANCE_SEMANTICS,
+    FACE_BOUNDARY_SEMANTICS,
+    HAIR_BOUNDARY_SEMANTICS,
+    HAND_BOUNDARY_SEMANTICS,
+    CLOTH_BOUNDARY_SEMANTICS,
+    OCCLUDED_BOUNDARY_SEMANTICS,
     SOFT_BAND_SEMANTICS,
     UNRESOLVED_REGION_SEMANTICS,
     UNCERTAINTY_MAP_SEMANTICS,
@@ -119,6 +124,7 @@ from wan.utils.animate_contract import (
 from wan.utils.media_io import write_person_mask_artifact, write_rgb_artifact
 from wan.utils.replacement_masks import build_soft_boundary_band
 from boundary_fusion import (
+    build_semantic_boundary_maps,
     fuse_boundary_signals,
     make_alpha_hard_compare_preview,
     make_fused_boundary_preview,
@@ -1056,6 +1062,14 @@ class ProcessPipeline():
                 face_bboxes = [list(map(int, bbox)) for bbox in face_analysis["tracked_bboxes_export"]]
                 face_bbox_curve = face_analysis["bbox_curve"]
                 runtime_stage_seconds["face_analysis"] = time.perf_counter() - face_analysis_start
+            semantic_boundary_maps = build_semantic_boundary_maps(
+                boundary_band=boundary_band_masks,
+                hard_foreground=hard_foreground_masks,
+                parsing_output=parsing_output,
+                matting_output=matting_output,
+                face_analysis=face_analysis,
+                pose_motion_analysis=pose_motion_analysis,
+            )
             background_start = time.perf_counter()
             bg_images, background_debug = build_clean_plate_background(
                 np.stack(export_frames).astype(np.uint8),
@@ -1359,6 +1373,24 @@ class ProcessPipeline():
                         fps=fps,
                     )
                     qa_outputs["hair_edge_mask_preview"] = qa_hair_edge["path"]
+                for semantic_name in (
+                    "face_boundary",
+                    "hair_boundary",
+                    "hand_boundary",
+                    "cloth_boundary",
+                    "occluded_boundary",
+                ):
+                    semantic_frames = semantic_boundary_maps.get(semantic_name)
+                    if semantic_frames is None:
+                        continue
+                    qa_semantic = write_rgb_artifact(
+                        frames=make_alpha_mask_preview(semantic_frames),
+                        output_root=output_path,
+                        stem=f"{semantic_name}_preview",
+                        artifact_format=self._artifact_format(save_format, lossless_intermediate, f"{semantic_name}_preview"),
+                        fps=fps,
+                    )
+                    qa_outputs[f"{semantic_name}_preview"] = qa_semantic["path"]
                 qa_background_hole = write_rgb_artifact(
                     frames=background_debug["hole_background"].astype(np.uint8),
                     output_root=output_path,
@@ -1680,6 +1712,38 @@ class ProcessPipeline():
                     fps=fps,
                     mask_semantics=HAIR_EDGE_MASK_SEMANTICS,
                 )
+            semantic_boundary_semantics = {
+                "face_boundary": FACE_BOUNDARY_SEMANTICS,
+                "hair_boundary": HAIR_BOUNDARY_SEMANTICS,
+                "hand_boundary": HAND_BOUNDARY_SEMANTICS,
+                "cloth_boundary": CLOTH_BOUNDARY_SEMANTICS,
+                "occluded_boundary": OCCLUDED_BOUNDARY_SEMANTICS,
+            }
+            for semantic_name, semantics in semantic_boundary_semantics.items():
+                semantic_frames = semantic_boundary_maps.get(semantic_name)
+                if semantic_frames is None:
+                    continue
+                src_files[semantic_name] = write_person_mask_artifact(
+                    mask_frames=semantic_frames,
+                    output_root=output_path,
+                    stem=f"src_{semantic_name}",
+                    artifact_format=self._artifact_format(save_format, lossless_intermediate, semantic_name, is_mask=True),
+                    fps=fps,
+                    mask_semantics=semantics,
+                )
+                src_files[semantic_name].update({
+                    "source_models": [
+                        parsing_output["mode"],
+                        matting_output["mode"],
+                        face_analysis["stats"]["source_counts"] if face_analysis is not None else "none",
+                    ],
+                    "boundary_specialization_version": "semantic_v1",
+                    "confidence_summary": {
+                        "mean": float(np.asarray(semantic_frames, dtype=np.float32).mean()),
+                        "p80": float(np.quantile(semantic_frames, 0.8)),
+                        "p95": float(np.quantile(semantic_frames, 0.95)),
+                    },
+                })
             if alpha_confidence_masks is not None:
                 src_files["alpha_confidence_v2"] = write_person_mask_artifact(
                     mask_frames=alpha_confidence_masks,

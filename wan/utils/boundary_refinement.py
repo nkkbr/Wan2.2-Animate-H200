@@ -136,6 +136,14 @@ def refine_boundary_frames(
     occlusion_band: np.ndarray | None = None,
     face_preserve_map: np.ndarray | None = None,
     face_confidence_map: np.ndarray | None = None,
+    detail_release_map: np.ndarray | None = None,
+    trimap_unknown_map: np.ndarray | None = None,
+    edge_detail_map: np.ndarray | None = None,
+    face_boundary_map: np.ndarray | None = None,
+    hair_boundary_map: np.ndarray | None = None,
+    hand_boundary_map: np.ndarray | None = None,
+    cloth_boundary_map: np.ndarray | None = None,
+    occluded_boundary_map: np.ndarray | None = None,
     structure_guard_strength: float = 1.0,
     mode: str = "deterministic",
     strength: float = 0.35,
@@ -163,6 +171,14 @@ def refine_boundary_frames(
         ("occlusion_band", occlusion_band),
         ("face_preserve_map", face_preserve_map),
         ("face_confidence_map", face_confidence_map),
+        ("detail_release_map", detail_release_map),
+        ("trimap_unknown_map", trimap_unknown_map),
+        ("edge_detail_map", edge_detail_map),
+        ("face_boundary_map", face_boundary_map),
+        ("hair_boundary_map", hair_boundary_map),
+        ("hand_boundary_map", hand_boundary_map),
+        ("cloth_boundary_map", cloth_boundary_map),
+        ("occluded_boundary_map", occluded_boundary_map),
     ):
         if value is not None and np.asarray(value).shape != person_mask.shape:
             raise ValueError(f"{name} must match person_mask shape. Got {np.asarray(value).shape} vs {person_mask.shape}.")
@@ -185,8 +201,205 @@ def refine_boundary_frames(
         else np.clip(person_mask + outer_band, 0.0, 1.0)[..., None]
     )
 
-    if mode not in {"deterministic", "v2"}:
+    if mode not in {"deterministic", "v2", "roi_v1", "semantic_v1"}:
         raise ValueError(f"Unsupported boundary refinement mode: {mode}")
+
+    if mode == "roi_v1":
+        background_confidence_local = (
+            np.ones_like(person_mask, dtype=np.float32)
+            if background_confidence is None else np.clip(np.asarray(background_confidence, dtype=np.float32), 0.0, 1.0)
+        )
+        uncertainty_map_local = (
+            np.zeros_like(person_mask, dtype=np.float32)
+            if uncertainty_map is None else np.clip(np.asarray(uncertainty_map, dtype=np.float32), 0.0, 1.0)
+        )
+        occlusion_band_local = (
+            np.zeros_like(person_mask, dtype=np.float32)
+            if occlusion_band is None else np.clip(np.asarray(occlusion_band, dtype=np.float32), 0.0, 1.0)
+        )
+        face_preserve_local = (
+            np.zeros_like(person_mask, dtype=np.float32)
+            if face_preserve_map is None else np.clip(np.asarray(face_preserve_map, dtype=np.float32), 0.0, 1.0)
+        )
+        face_confidence_local = (
+            np.zeros_like(person_mask, dtype=np.float32)
+            if face_confidence_map is None else np.clip(np.asarray(face_confidence_map, dtype=np.float32), 0.0, 1.0)
+        )
+        detail_release_local = (
+            np.zeros_like(person_mask, dtype=np.float32)
+            if detail_release_map is None else np.clip(np.asarray(detail_release_map, dtype=np.float32), 0.0, 1.0)
+        )
+        trimap_unknown_local = (
+            np.zeros_like(person_mask, dtype=np.float32)
+            if trimap_unknown_map is None else np.clip(np.asarray(trimap_unknown_map, dtype=np.float32), 0.0, 1.0)
+        )
+        edge_detail_local = (
+            np.zeros_like(person_mask, dtype=np.float32)
+            if edge_detail_map is None else np.clip(np.asarray(edge_detail_map, dtype=np.float32), 0.0, 1.0)
+        )
+
+        roi_mask = build_boundary_roi_mask(
+            person_mask=person_mask,
+            outer_band=outer_band,
+            inner_band=inner_band,
+            soft_alpha=soft_alpha,
+            occlusion_band=occlusion_band_local,
+            uncertainty_map=uncertainty_map_local,
+            face_preserve_map=face_preserve_local,
+            detail_release_map=detail_release_local,
+            trimap_unknown_map=trimap_unknown_local,
+            edge_detail_map=edge_detail_local,
+        )
+        roi_boxes = _compute_roi_boxes(roi_mask, min_size=96, pad=20)
+        refined_frames = generated_frames.copy()
+        roi_blend_alpha = np.zeros_like(person_mask, dtype=np.float32)
+        roi_scale_values = []
+
+        for frame_idx, (x0, y0, x1, y1) in enumerate(roi_boxes):
+            crop_w = max(1, x1 - x0)
+            crop_h = max(1, y1 - y0)
+            if crop_w <= 1 or crop_h <= 1:
+                continue
+            scale = 2.1 if max(crop_w, crop_h) <= 256 else 1.6
+            roi_scale_values.append(float(scale))
+            target_size = (max(32, int(round(crop_w * scale))), max(32, int(round(crop_h * scale))))
+
+            def _crop_resize_rgb(arr):
+                return _resize_rgb_frame(arr[frame_idx, y0:y1, x0:x1], target_size)
+
+            def _crop_resize_mask(arr):
+                return _resize_mask_frame(arr[frame_idx, y0:y1, x0:x1], target_size)
+
+            crop_generated = _crop_resize_rgb(generated_frames)[None]
+            crop_background = _crop_resize_rgb(background_frames)[None]
+            crop_person_mask = _crop_resize_mask(person_mask)[None]
+            crop_soft_band = _crop_resize_mask(outer_band)[None]
+            crop_soft_alpha = _crop_resize_mask(soft_alpha)[None] if soft_alpha is not None else None
+            crop_background_confidence = _crop_resize_mask(background_confidence_local)[None]
+            crop_uncertainty_map = _crop_resize_mask(uncertainty_map_local)[None]
+            crop_occlusion_band = _crop_resize_mask(occlusion_band_local)[None]
+            crop_face_preserve = _crop_resize_mask(face_preserve_local)[None]
+            crop_face_confidence = _crop_resize_mask(face_confidence_local)[None]
+            crop_detail_release = _crop_resize_mask(detail_release_local)[None]
+            crop_trimap_unknown = _crop_resize_mask(trimap_unknown_local)[None]
+            crop_edge_detail = _crop_resize_mask(edge_detail_local)[None]
+
+            crop_refined, crop_debug = refine_boundary_frames(
+                generated_frames=crop_generated,
+                background_frames=crop_background,
+                person_mask=crop_person_mask,
+                soft_band=crop_soft_band,
+                soft_alpha=crop_soft_alpha,
+                background_confidence=crop_background_confidence,
+                uncertainty_map=crop_uncertainty_map,
+                occlusion_band=crop_occlusion_band,
+                face_preserve_map=crop_face_preserve,
+                face_confidence_map=crop_face_confidence,
+                structure_guard_strength=structure_guard_strength,
+                mode="semantic_v1",
+                strength=min(1.0, strength + 0.14),
+                sharpen=min(1.0, sharpen + 0.14),
+                inner_width=max(inner_width, 2),
+                sharpen_sigma=max(0.8, sharpen_sigma),
+            )
+            crop_refined = crop_refined[0].astype(np.float32) / 255.0
+            crop_generated_float = crop_generated[0].astype(np.float32) / 255.0
+
+            crop_edge_focus = np.clip(
+                np.maximum.reduce(
+                    [
+                        0.95 * crop_soft_band[0],
+                        0.75 * crop_person_mask[0],
+                        0.70 * crop_detail_release[0],
+                        0.65 * crop_edge_detail[0],
+                        0.55 * crop_trimap_unknown[0],
+                    ]
+                ),
+                0.0,
+                1.0,
+            ).astype(np.float32)
+            crop_edge_focus = crop_edge_focus * np.clip(1.0 - 0.25 * crop_uncertainty_map[0], 0.0, 1.0)
+            crop_generated_sharp = apply_unsharp_mask(
+                crop_generated_float[None],
+                sigma=max(0.7, sharpen_sigma * 0.85),
+                amount=min(1.0, sharpen + 0.32),
+            )[0]
+            crop_detail_residual = np.clip(crop_generated_sharp - crop_generated_float, -0.5, 0.5)
+            crop_refined = np.clip(
+                crop_refined + crop_edge_focus[..., None] * 0.34 * crop_detail_residual,
+                0.0,
+                1.0,
+            )
+
+            core_focus = np.clip(
+                np.maximum.reduce(
+                    [
+                        roi_mask[frame_idx, y0:y1, x0:x1],
+                        0.85 * outer_band[frame_idx, y0:y1, x0:x1],
+                        0.60 * inner_band[frame_idx, y0:y1, x0:x1],
+                    ]
+                ),
+                0.0,
+                1.0,
+            ).astype(np.float32)
+            feather = core_focus.copy()
+            feather = _dilate_mask(feather, kernel_size=9, iterations=1)
+            feather = cv2.GaussianBlur(feather, (11, 11), sigmaX=0)
+            feather = np.clip(feather, 0.0, 1.0).astype(np.float32)
+            feather_small = _resize_mask_frame(feather, target_size)
+            feather_full = _resize_mask_frame(feather_small, (crop_w, crop_h))
+            core_small = _resize_mask_frame(core_focus, target_size)
+            core_full = _resize_mask_frame(core_small, (crop_w, crop_h))
+            blend_full = np.clip(np.maximum(0.92 * core_full, 0.58 * feather_full), 0.0, 1.0).astype(np.float32)
+            roi_blend_alpha[frame_idx, y0:y1, x0:x1] = np.maximum(
+                roi_blend_alpha[frame_idx, y0:y1, x0:x1],
+                blend_full,
+            )
+
+            crop_refined_small = _resize_rgb_frame(
+                np.clip(np.rint(crop_refined * 255.0), 0, 255).astype(np.uint8),
+                (crop_w, crop_h),
+            ).astype(np.float32) / 255.0
+            current = refined_frames[frame_idx, y0:y1, x0:x1].astype(np.float32) / 255.0
+            blend = blend_full[..., None]
+            merged = np.clip(current * (1.0 - blend) + crop_refined_small * blend, 0.0, 1.0)
+            refined_frames[frame_idx, y0:y1, x0:x1] = np.clip(np.rint(merged * 255.0), 0, 255).astype(np.uint8)
+
+        metrics = compute_boundary_refinement_metrics(
+            before_frames=generated,
+            after_frames=refined_frames.astype(np.float32) / 255.0,
+            background_frames=background,
+            outer_band=outer_band,
+            inner_band=inner_band,
+        )
+        roi_metrics = compute_boundary_roi_metrics(
+            before_frames=generated,
+            after_frames=refined_frames.astype(np.float32) / 255.0,
+            background_frames=background,
+            outer_band=outer_band,
+            inner_band=inner_band,
+            roi_mask=roi_mask,
+        )
+        metrics.update(roi_metrics)
+        debug = {
+            "outer_band": outer_band,
+            "inner_band": inner_band,
+            "soft_alpha": target_foreground_alpha[..., 0],
+            "sharpen_alpha": np.zeros_like(person_mask, dtype=np.float32),
+            "band_blend": roi_blend_alpha.astype(np.float32),
+            "target_foreground_alpha": target_foreground_alpha[..., 0],
+            "mode": mode,
+            "metrics": metrics,
+            "roi_mask": roi_mask.astype(np.float32),
+            "roi_blend_alpha": roi_blend_alpha.astype(np.float32),
+            "roi_area_ratio": float(roi_mask.mean()),
+            "roi_scale_mean": float(np.mean(roi_scale_values)) if roi_scale_values else 1.0,
+            "roi_boxes": [
+                {"frame_index": int(i), "x0": int(box[0]), "y0": int(box[1]), "x1": int(box[2]), "y1": int(box[3])}
+                for i, box in enumerate(roi_boxes)
+            ],
+        }
+        return refined_frames.astype(np.uint8), debug
 
     if mode == "deterministic":
         sharpen_alpha = np.clip(inner_band * sharpen, 0.0, 1.0)[..., None]
@@ -225,6 +438,26 @@ def refine_boundary_frames(
             np.zeros_like(person_mask, dtype=np.float32)
             if face_confidence_map is None else np.clip(np.asarray(face_confidence_map, dtype=np.float32), 0.0, 1.0)
         )
+        face_boundary_map = (
+            np.zeros_like(person_mask, dtype=np.float32)
+            if face_boundary_map is None else np.clip(np.asarray(face_boundary_map, dtype=np.float32), 0.0, 1.0)
+        )
+        hair_boundary_map = (
+            np.zeros_like(person_mask, dtype=np.float32)
+            if hair_boundary_map is None else np.clip(np.asarray(hair_boundary_map, dtype=np.float32), 0.0, 1.0)
+        )
+        hand_boundary_map = (
+            np.zeros_like(person_mask, dtype=np.float32)
+            if hand_boundary_map is None else np.clip(np.asarray(hand_boundary_map, dtype=np.float32), 0.0, 1.0)
+        )
+        cloth_boundary_map = (
+            np.zeros_like(person_mask, dtype=np.float32)
+            if cloth_boundary_map is None else np.clip(np.asarray(cloth_boundary_map, dtype=np.float32), 0.0, 1.0)
+        )
+        occluded_boundary_map = (
+            np.zeros_like(person_mask, dtype=np.float32)
+            if occluded_boundary_map is None else np.clip(np.asarray(occluded_boundary_map, dtype=np.float32), 0.0, 1.0)
+        )
         structure_guard = float(np.clip(structure_guard_strength, 0.70, 1.0))
         target_alpha_2d = target_foreground_alpha[..., 0]
         outer_focus = np.clip(outer_band * (1.0 - target_alpha_2d), 0.0, 1.0)
@@ -240,25 +473,53 @@ def refine_boundary_frames(
             0.0,
             1.0,
         )
-        sharpen_alpha = np.clip(adaptive_sharpen * sharpen, 0.0, 1.0)[..., None]
-        refined = generated * (1.0 - sharpen_alpha) + sharpened * sharpen_alpha
-
         adaptive_blend = np.clip(outer_focus * strength, 0.0, 1.0)
         adaptive_blend = adaptive_blend * (0.25 + 0.75 * background_confidence)
         adaptive_blend = adaptive_blend * (1.0 - 0.80 * uncertainty_map)
         adaptive_blend = adaptive_blend * (1.0 - 0.55 * occlusion_band)
         adaptive_blend = adaptive_blend * (1.0 - 0.50 * face_preserve_map)
         adaptive_blend = np.clip(adaptive_blend * structure_guard, 0.0, 1.0)
-        band_blend = adaptive_blend[..., None]
-
-        composite = refined * target_foreground_alpha + background * (1.0 - target_foreground_alpha)
-        refined = refined * (1.0 - band_blend) + composite * band_blend
         edge_boost = np.clip(edge_focus * (0.55 + 0.45 * target_alpha_2d), 0.0, 1.0)
         edge_boost = edge_boost * (1.0 - 0.45 * uncertainty_map)
         edge_boost = edge_boost * (0.35 + 0.65 * background_confidence)
         edge_boost = edge_boost * (1.0 - 0.40 * occlusion_band)
         edge_boost = edge_boost * (1.0 - 0.35 * face_preserve_map)
         edge_boost = np.clip(edge_boost * structure_guard, 0.0, 1.0)
+        if mode == "semantic_v1":
+            hair_focus = np.clip(hair_boundary_map, 0.0, 1.0)
+            face_focus = np.clip(face_boundary_map, 0.0, 1.0)
+            hand_focus = np.clip(hand_boundary_map, 0.0, 1.0)
+            cloth_focus = np.clip(cloth_boundary_map, 0.0, 1.0)
+            occluded_focus = np.clip(occluded_boundary_map, 0.0, 1.0)
+
+            adaptive_sharpen = np.clip(
+                adaptive_sharpen
+                * (1.0 + 0.22 * face_focus + 0.18 * hand_focus + 0.16 * cloth_focus)
+                * (1.0 - 0.12 * hair_focus)
+                * (1.0 - 0.45 * occluded_focus),
+                0.0,
+                1.0,
+            )
+            adaptive_blend = np.clip(
+                adaptive_blend
+                * (1.0 - 0.28 * face_focus - 0.06 * hair_focus - 0.16 * hand_focus)
+                * (1.0 + 0.26 * occluded_focus),
+                0.0,
+                1.0,
+            )
+            band_blend = adaptive_blend[..., None]
+            edge_boost = np.clip(
+                edge_boost
+                * (1.0 + 0.28 * face_focus + 0.08 * hair_focus + 0.28 * hand_focus + 0.20 * cloth_focus)
+                * (1.0 - 0.50 * occluded_focus),
+                0.0,
+                1.0,
+            )
+        sharpen_alpha = np.clip(adaptive_sharpen * sharpen, 0.0, 1.0)[..., None]
+        refined = generated * (1.0 - sharpen_alpha) + sharpened * sharpen_alpha
+        band_blend = adaptive_blend[..., None]
+        composite = refined * target_foreground_alpha + background * (1.0 - target_foreground_alpha)
+        refined = refined * (1.0 - band_blend) + composite * band_blend
         edge_boost_alpha = np.clip(edge_boost * (0.30 + 0.70 * sharpen), 0.0, 1.0)[..., None]
         edge_detail = np.clip(sharpened - background, -1.0, 1.0)
         refined = np.clip(refined + edge_boost_alpha * 0.24 * edge_detail, 0.0, 1.0)
@@ -274,6 +535,11 @@ def refine_boundary_frames(
             "outer_focus": outer_focus.astype(np.float32),
             "edge_focus": edge_focus.astype(np.float32),
             "edge_boost_alpha": edge_boost_alpha[..., 0].astype(np.float32),
+            "face_boundary_map": face_boundary_map.astype(np.float32),
+            "hair_boundary_map": hair_boundary_map.astype(np.float32),
+            "hand_boundary_map": hand_boundary_map.astype(np.float32),
+            "cloth_boundary_map": cloth_boundary_map.astype(np.float32),
+            "occluded_boundary_map": occluded_boundary_map.astype(np.float32),
         }
 
     refined = np.clip(refined, 0.0, 1.0)
@@ -305,6 +571,140 @@ def _write_rgb_png(path: Path, frame_rgb: np.ndarray) -> None:
     ok = cv2.imwrite(str(path), cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
     if not ok:
         raise RuntimeError(f"Failed to write PNG frame: {path}")
+
+
+def _dilate_mask(mask: np.ndarray, kernel_size: int, iterations: int = 1) -> np.ndarray:
+    if kernel_size <= 1:
+        return mask.astype(np.float32)
+    kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+    hard = (mask > 1e-3).astype(np.uint8)
+    dilated = cv2.dilate(hard, kernel, iterations=max(1, int(iterations)))
+    return dilated.astype(np.float32)
+
+
+def build_boundary_roi_mask(
+    *,
+    person_mask: np.ndarray,
+    outer_band: np.ndarray,
+    inner_band: np.ndarray,
+    soft_alpha: np.ndarray | None = None,
+    occlusion_band: np.ndarray | None = None,
+    uncertainty_map: np.ndarray | None = None,
+    face_preserve_map: np.ndarray | None = None,
+    detail_release_map: np.ndarray | None = None,
+    trimap_unknown_map: np.ndarray | None = None,
+    edge_detail_map: np.ndarray | None = None,
+    dilate_kernel: int = 17,
+) -> np.ndarray:
+    person_mask = np.asarray(person_mask, dtype=np.float32)
+    outer_band = np.asarray(outer_band, dtype=np.float32)
+    inner_band = np.asarray(inner_band, dtype=np.float32)
+    soft_alpha = np.zeros_like(person_mask, dtype=np.float32) if soft_alpha is None else np.asarray(soft_alpha, dtype=np.float32)
+    occlusion_band = np.zeros_like(person_mask, dtype=np.float32) if occlusion_band is None else np.asarray(occlusion_band, dtype=np.float32)
+    uncertainty_map = np.zeros_like(person_mask, dtype=np.float32) if uncertainty_map is None else np.asarray(uncertainty_map, dtype=np.float32)
+    face_preserve_map = np.zeros_like(person_mask, dtype=np.float32) if face_preserve_map is None else np.asarray(face_preserve_map, dtype=np.float32)
+    detail_release_map = np.zeros_like(person_mask, dtype=np.float32) if detail_release_map is None else np.asarray(detail_release_map, dtype=np.float32)
+    trimap_unknown_map = np.zeros_like(person_mask, dtype=np.float32) if trimap_unknown_map is None else np.asarray(trimap_unknown_map, dtype=np.float32)
+    edge_detail_map = np.zeros_like(person_mask, dtype=np.float32) if edge_detail_map is None else np.asarray(edge_detail_map, dtype=np.float32)
+
+    alpha_transition = np.clip(4.0 * soft_alpha * (1.0 - soft_alpha), 0.0, 1.0).astype(np.float32)
+    base = np.clip(
+        np.maximum.reduce(
+            [
+                outer_band,
+                0.85 * inner_band,
+                0.75 * alpha_transition,
+                0.60 * occlusion_band,
+                0.45 * detail_release_map,
+                0.45 * edge_detail_map,
+                0.35 * trimap_unknown_map,
+                0.30 * face_preserve_map,
+            ]
+        ),
+        0.0,
+        1.0,
+    ).astype(np.float32)
+    base = base * np.clip(1.0 - 0.20 * uncertainty_map, 0.0, 1.0)
+
+    roi_masks = []
+    for idx in range(base.shape[0]):
+        roi = _dilate_mask(base[idx], kernel_size=dilate_kernel, iterations=1)
+        roi = np.clip(np.maximum(roi, (outer_band[idx] > 0.02).astype(np.float32)), 0.0, 1.0)
+        # Keep ROI local to the person neighborhood to avoid background-only spill.
+        person_neighborhood = _dilate_mask(person_mask[idx], kernel_size=max(9, dilate_kernel + 8), iterations=1)
+        roi = np.clip(roi * person_neighborhood, 0.0, 1.0)
+        roi_masks.append(roi.astype(np.float32))
+    return np.stack(roi_masks).astype(np.float32)
+
+
+def _compute_roi_boxes(roi_mask: np.ndarray, *, min_size: int = 96, pad: int = 20) -> list[tuple[int, int, int, int]]:
+    boxes = []
+    height, width = roi_mask.shape[1:]
+    for mask in roi_mask:
+        ys, xs = np.nonzero(mask > 0.01)
+        if len(xs) == 0 or len(ys) == 0:
+            boxes.append((0, 0, width, height))
+            continue
+        x0 = max(0, int(xs.min()) - pad)
+        y0 = max(0, int(ys.min()) - pad)
+        x1 = min(width, int(xs.max()) + pad + 1)
+        y1 = min(height, int(ys.max()) + pad + 1)
+
+        bw = x1 - x0
+        bh = y1 - y0
+        if bw < min_size:
+            extra = min_size - bw
+            x0 = max(0, x0 - extra // 2)
+            x1 = min(width, x1 + extra - extra // 2)
+        if bh < min_size:
+            extra = min_size - bh
+            y0 = max(0, y0 - extra // 2)
+            y1 = min(height, y1 + extra - extra // 2)
+        boxes.append((int(x0), int(y0), int(x1), int(y1)))
+    return boxes
+
+
+def _resize_rgb_frame(frame: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    width, height = size
+    return cv2.resize(frame, (width, height), interpolation=cv2.INTER_CUBIC)
+
+
+def _resize_mask_frame(frame: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    width, height = size
+    return cv2.resize(frame.astype(np.float32), (width, height), interpolation=cv2.INTER_LINEAR).astype(np.float32)
+
+
+def compute_boundary_roi_metrics(
+    *,
+    before_frames: np.ndarray,
+    after_frames: np.ndarray,
+    background_frames: np.ndarray,
+    outer_band: np.ndarray,
+    inner_band: np.ndarray,
+    roi_mask: np.ndarray,
+) -> dict:
+    roi_mask = np.asarray(roi_mask, dtype=np.float32)
+    roi_outer_band = np.clip(np.asarray(outer_band, dtype=np.float32) * roi_mask, 0.0, 1.0)
+    roi_inner_band = np.clip(np.asarray(inner_band, dtype=np.float32) * roi_mask, 0.0, 1.0)
+    metrics = compute_boundary_refinement_metrics(
+        before_frames=before_frames,
+        after_frames=after_frames,
+        background_frames=background_frames,
+        outer_band=roi_outer_band,
+        inner_band=roi_inner_band,
+    )
+    return {
+        "roi_band_gradient_before_mean": metrics["band_gradient_before_mean"],
+        "roi_band_gradient_after_mean": metrics["band_gradient_after_mean"],
+        "roi_band_edge_contrast_before_mean": metrics["band_edge_contrast_before_mean"],
+        "roi_band_edge_contrast_after_mean": metrics["band_edge_contrast_after_mean"],
+        "roi_band_mad_mean": metrics["band_mad_mean"],
+        "roi_halo_ratio_before": metrics["halo_ratio_before"],
+        "roi_halo_ratio_after": metrics["halo_ratio_after"],
+        "roi_outer_band_mean": metrics["outer_band_mean"],
+        "roi_inner_band_mean": metrics["inner_band_mean"],
+        "roi_area_ratio": float(roi_mask.mean()),
+    }
 
 
 def _compute_crop_boxes(person_mask: np.ndarray, outer_band: np.ndarray, frame_indices: list[int]) -> dict[int, tuple[int, int, int, int]]:
@@ -380,6 +780,13 @@ def write_boundary_refinement_debug_artifacts(
         "outer_focus",
         "edge_focus",
         "edge_boost_alpha",
+        "roi_mask",
+        "roi_blend_alpha",
+        "face_boundary_map",
+        "hair_boundary_map",
+        "hand_boundary_map",
+        "cloth_boundary_map",
+        "occluded_boundary_map",
     ):
         if key in debug_data:
             masks[key] = np.asarray(debug_data[key], dtype=np.float32)
@@ -412,6 +819,13 @@ def write_boundary_refinement_debug_artifacts(
             axis=1,
         )
         _write_rgb_png(crops_dir / f"frame_{index:06d}_crop.png", crop_strip)
+
+    if "roi_boxes" in debug_data:
+        roi_boxes_path = debug_dir / "roi_boxes.json"
+        with roi_boxes_path.open("w", encoding="utf-8") as handle:
+            json.dump(debug_data["roi_boxes"], handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+        artifacts["roi_boxes"] = str(roi_boxes_path.resolve())
 
     metrics_path = debug_dir / "boundary_refinement_metrics.json"
     with metrics_path.open("w", encoding="utf-8") as handle:

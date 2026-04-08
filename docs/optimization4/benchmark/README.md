@@ -28,6 +28,10 @@
   - Step 02 的正式结论与三轮 alpha / matting AB 结果
 - `03-rich-boundary-signal-core-conditioning-findings.md`
   - Step 03 的正式结论与三轮 generate-side rich conditioning AB 结果
+- `04-boundary-roi-two-stage-highres-refine-findings.md`
+  - Step 04 的正式结论与三轮 boundary ROI two-stage refine AB 结果
+- `06-semantic-boundary-specialization-findings.md`
+  - Step 06 的正式结论与三轮 semantic boundary specialization AB 结果
 
 
 ## 3. 关键脚本
@@ -101,6 +105,59 @@ python scripts/eval/summarize_optimization4_validation.py \
   --summary_json runs/optimization4_step01_core/summary.json \
   --gate_policy docs/optimization4/benchmark/gate_policy.step01.json \
   --output_json runs/optimization4_step01_core/gate_result.json
+```
+
+### 3.9 运行 Step 04 ROI refine AB
+
+```bash
+python scripts/eval/run_optimization4_boundary_roi_benchmark.py \
+  --suite_name optimization4_step04_round1_ab
+```
+
+### 3.10 评估 Step 04 ROI refine gate
+
+```bash
+python scripts/eval/evaluate_optimization4_boundary_roi_benchmark.py \
+  --summary_json runs/optimization4_step04_round1_ab/summary.json \
+  --output_json runs/optimization4_step04_round1_ab/gate_result.json
+```
+
+### 3.11 synthetic ROI refine 检查
+
+```bash
+python scripts/eval/check_boundary_roi_refine.py
+```
+
+### 3.12 synthetic semantic boundary specialization 检查
+
+```bash
+python scripts/eval/check_semantic_boundary_specialization.py
+```
+
+### 3.13 运行 Step 06 semantic boundary AB
+
+```bash
+python scripts/eval/run_optimization4_semantic_boundary_benchmark.py \
+  --suite_name optimization4_step06_round1_ab \
+  --src_root_path runs/<step06_preprocess>/preprocess
+```
+
+### 3.14 计算 Step 06 semantic boundary 分类指标
+
+```bash
+python scripts/eval/compute_semantic_boundary_metrics.py \
+  --before runs/<suite>/v2/outputs/v2_rich_v1.mkv \
+  --after runs/<suite>/semantic_v1/outputs/semantic_v1_semantic_v1.mkv \
+  --src_root_path runs/<step06_preprocess>/preprocess \
+  --output_json runs/<suite>/semantic_v1_vs_v2_semantic_metrics.json
+```
+
+### 3.15 评估 Step 06 semantic boundary gate
+
+```bash
+python scripts/eval/evaluate_optimization4_semantic_boundary_benchmark.py \
+  --summary_json runs/optimization4_step06_round1_ab/summary.json \
+  --output_json runs/optimization4_step06_round1_ab/gate_result.json
 ```
 
 

@@ -309,3 +309,129 @@ def make_alpha_hard_compare_preview(hard_foreground: np.ndarray, soft_alpha: np.
         alpha_u8 = np.repeat(np.clip(np.rint(alpha_frame[..., None] * 255.0), 0, 255).astype(np.uint8), 3, axis=2)
         previews.append(np.concatenate([hard_u8, alpha_u8], axis=1))
     return np.stack(previews).astype(np.uint8)
+
+
+def _safe_mask(values: np.ndarray | None, fallback: np.ndarray) -> np.ndarray:
+    if values is None:
+        return np.zeros_like(fallback, dtype=np.float32)
+    arr = np.asarray(values, dtype=np.float32)
+    if arr.shape != fallback.shape:
+        raise ValueError(f"Semantic boundary source shape mismatch: {arr.shape} vs {fallback.shape}")
+    return np.clip(arr, 0.0, 1.0).astype(np.float32)
+
+
+def _face_region_from_parsing(face_parsing: np.ndarray | None, fallback: np.ndarray) -> np.ndarray:
+    if face_parsing is None:
+        return np.zeros_like(fallback, dtype=np.float32)
+    labels = np.asarray(face_parsing)
+    if labels.shape != fallback.shape:
+        raise ValueError(f"face_parsing shape mismatch: {labels.shape} vs {fallback.shape}")
+    return (labels > 0).astype(np.float32)
+
+
+def build_semantic_boundary_maps(
+    *,
+    boundary_band: np.ndarray,
+    hard_foreground: np.ndarray,
+    parsing_output: dict | None = None,
+    matting_output: dict | None = None,
+    face_analysis: dict | None = None,
+    pose_motion_analysis: dict | None = None,
+) -> dict:
+    boundary_band = np.clip(np.asarray(boundary_band, dtype=np.float32), 0.0, 1.0)
+    hard_foreground = np.clip(np.asarray(hard_foreground, dtype=np.float32), 0.0, 1.0)
+
+    parsing_output = parsing_output or {}
+    matting_output = matting_output or {}
+    face_analysis = face_analysis or {}
+    pose_motion_analysis = pose_motion_analysis or {}
+
+    head_prior = _safe_mask(parsing_output.get("head_prior"), boundary_band)
+    hand_prior = _safe_mask(parsing_output.get("hand_prior"), boundary_band)
+    part_foreground = _safe_mask(parsing_output.get("part_foreground_prior"), boundary_band)
+    parsing_occlusion = _safe_mask(parsing_output.get("occlusion_prior"), boundary_band)
+    fine_boundary = _safe_mask(matting_output.get("fine_boundary_mask"), boundary_band)
+    hair_edge = _safe_mask(matting_output.get("hair_edge_mask"), boundary_band)
+    pose_uncertainty = _safe_mask(pose_motion_analysis.get("pose_uncertainty"), boundary_band)
+    face_alpha = _safe_mask(face_analysis.get("face_alpha"), boundary_band)
+    face_uncertainty = _safe_mask(face_analysis.get("face_uncertainty"), boundary_band)
+    face_region = np.maximum(
+        face_alpha,
+        _face_region_from_parsing(face_analysis.get("face_parsing"), boundary_band),
+    )
+    face_region = np.clip(face_region * (1.0 - 0.25 * face_uncertainty), 0.0, 1.0)
+
+    face_weight = np.clip(
+        np.maximum.reduce([
+            0.95 * face_region,
+            0.42 * head_prior * face_region,
+        ]) * boundary_band,
+        0.0,
+        1.0,
+    )
+    hair_weight = np.clip(
+        np.maximum.reduce([
+            1.15 * hair_edge,
+            0.50 * head_prior * np.clip(1.0 - face_region, 0.0, 1.0),
+            0.30 * fine_boundary * np.clip(1.0 - face_region, 0.0, 1.0),
+        ]) * boundary_band,
+        0.0,
+        1.0,
+    )
+    hand_weight = np.clip(
+        np.maximum.reduce([
+            0.95 * hand_prior,
+            0.28 * hand_prior * pose_uncertainty,
+            0.18 * fine_boundary * hand_prior,
+        ]) * boundary_band,
+        0.0,
+        1.0,
+    )
+    occluded_weight = np.clip(
+        np.maximum(parsing_occlusion, 0.80 * parsing_occlusion * fine_boundary) * boundary_band,
+        0.0,
+        1.0,
+    )
+    assigned = np.clip(np.maximum.reduce([face_weight, hair_weight, hand_weight, occluded_weight]), 0.0, 1.0)
+    cloth_weight = np.clip(
+        np.maximum(
+            part_foreground * np.clip(1.0 - face_region, 0.0, 1.0),
+            hard_foreground * np.clip(1.0 - assigned, 0.0, 1.0),
+        ) * boundary_band,
+        0.0,
+        1.0,
+    )
+
+    weights = np.stack(
+        [face_weight, hair_weight, hand_weight, cloth_weight, occluded_weight],
+        axis=0,
+    ).astype(np.float32)
+    weight_sum = np.maximum(weights.sum(axis=0, keepdims=True), 1.0)
+    normalized = np.clip(weights / weight_sum, 0.0, 1.0)
+
+    semantic_maps = {
+        "face_boundary": (boundary_band * normalized[0]).astype(np.float32),
+        "hair_boundary": (boundary_band * normalized[1]).astype(np.float32),
+        "hand_boundary": (boundary_band * normalized[2]).astype(np.float32),
+        "cloth_boundary": (boundary_band * normalized[3]).astype(np.float32),
+        "occluded_boundary": (boundary_band * normalized[4]).astype(np.float32),
+    }
+    semantic_maps["stats"] = {
+        "face_boundary_mean": float(semantic_maps["face_boundary"].mean()),
+        "hair_boundary_mean": float(semantic_maps["hair_boundary"].mean()),
+        "hand_boundary_mean": float(semantic_maps["hand_boundary"].mean()),
+        "cloth_boundary_mean": float(semantic_maps["cloth_boundary"].mean()),
+        "occluded_boundary_mean": float(semantic_maps["occluded_boundary"].mean()),
+        "coverage_ratio": float(
+            np.mean(
+                (
+                    semantic_maps["face_boundary"]
+                    + semantic_maps["hair_boundary"]
+                    + semantic_maps["hand_boundary"]
+                    + semantic_maps["cloth_boundary"]
+                    + semantic_maps["occluded_boundary"]
+                ) > 1e-3
+            )
+        ),
+    }
+    return semantic_maps

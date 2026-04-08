@@ -137,11 +137,11 @@ def _validate_args(args):
         assert 0.0 <= args.replacement_transition_low < args.replacement_transition_high <= 1.0, (
             "--replacement_transition_low and --replacement_transition_high must satisfy 0 <= low < high <= 1."
         )
-        assert args.replacement_conditioning_mode in {"legacy", "rich", "rich_v1"}, (
-            "--replacement_conditioning_mode must be one of: legacy, rich, rich_v1."
+        assert args.replacement_conditioning_mode in {"legacy", "rich", "rich_v1", "semantic_v1"}, (
+            "--replacement_conditioning_mode must be one of: legacy, rich, rich_v1, semantic_v1."
         )
-        assert args.boundary_refine_mode in {"none", "deterministic", "v2"}, (
-            "--boundary_refine_mode must be one of: none, deterministic, v2."
+        assert args.boundary_refine_mode in {"none", "deterministic", "v2", "roi_v1", "semantic_v1"}, (
+            "--boundary_refine_mode must be one of: none, deterministic, v2, roi_v1, semantic_v1."
         )
         assert 0.0 <= args.boundary_refine_strength <= 1.0, "--boundary_refine_strength must be in [0, 1]."
         assert 0.0 <= args.boundary_refine_sharpen <= 1.0, "--boundary_refine_sharpen must be in [0, 1]."
@@ -445,8 +445,8 @@ def _parse_args():
         "--replacement_conditioning_mode",
         type=str,
         default="legacy",
-        choices=["legacy", "rich", "rich_v1"],
-        help="How Wan-Animate replacement consumes richer preprocess signals. 'rich_v1' uses alpha_v2/trimap/fine-boundary/hair-edge plus uncertainty/occlusion/background confidence/face preservation maps. 'rich' is kept as a legacy alias."
+        choices=["legacy", "rich", "rich_v1", "semantic_v1"],
+        help="How Wan-Animate replacement consumes richer preprocess signals. 'rich_v1' uses alpha_v2/trimap/fine-boundary/hair-edge plus uncertainty/occlusion/background confidence/face preservation maps. 'semantic_v1' additionally uses semantic boundary subclasses (face/hair/hand/cloth/occluded). 'rich' is kept as a legacy alias."
     )
     parser.add_argument(
         "--replacement_mask_downsample_mode",
@@ -477,8 +477,8 @@ def _parse_args():
         "--boundary_refine_mode",
         type=str,
         default="none",
-        choices=["none", "deterministic", "v2"],
-        help="Optional pixel-domain boundary refinement mode applied after Wan-Animate decoding."
+        choices=["none", "deterministic", "v2", "roi_v1", "semantic_v1"],
+        help="Optional pixel-domain boundary refinement mode applied after Wan-Animate decoding. 'semantic_v1' specializes refine behavior for face/hair/hand/cloth/occluded boundary classes."
     )
     parser.add_argument(
         "--boundary_refine_strength",

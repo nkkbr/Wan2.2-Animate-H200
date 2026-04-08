@@ -458,6 +458,38 @@ class WanAnimate:
                 replacement_masks["face_confidence_map"][:real_frame_len].cpu().numpy()
                 if replacement_masks["face_confidence_map"] is not None else None
             ),
+            detail_release_map=(
+                replacement_masks["detail_release_map"][:real_frame_len].cpu().numpy()
+                if replacement_masks["detail_release_map"] is not None else None
+            ),
+            trimap_unknown_map=(
+                replacement_masks["trimap_unknown_map"][:real_frame_len].cpu().numpy()
+                if replacement_masks["trimap_unknown_map"] is not None else None
+            ),
+            edge_detail_map=(
+                replacement_masks["edge_detail_map"][:real_frame_len].cpu().numpy()
+                if replacement_masks["edge_detail_map"] is not None else None
+            ),
+            face_boundary_map=(
+                replacement_masks["face_boundary"][:real_frame_len].cpu().numpy()
+                if replacement_masks["face_boundary"] is not None else None
+            ),
+            hair_boundary_map=(
+                replacement_masks["hair_boundary"][:real_frame_len].cpu().numpy()
+                if replacement_masks["hair_boundary"] is not None else None
+            ),
+            hand_boundary_map=(
+                replacement_masks["hand_boundary"][:real_frame_len].cpu().numpy()
+                if replacement_masks["hand_boundary"] is not None else None
+            ),
+            cloth_boundary_map=(
+                replacement_masks["cloth_boundary"][:real_frame_len].cpu().numpy()
+                if replacement_masks["cloth_boundary"] is not None else None
+            ),
+            occluded_boundary_map=(
+                replacement_masks["occluded_boundary"][:real_frame_len].cpu().numpy()
+                if replacement_masks["occluded_boundary"] is not None else None
+            ),
             structure_guard_strength=replacement_masks["structure_guard_strength"],
             mode=boundary_refine_mode,
             strength=boundary_refine_strength,
@@ -512,6 +544,11 @@ class WanAnimate:
         hair_edge_mask_images,
         alpha_confidence_images,
         alpha_source_provenance_images,
+        face_boundary_images,
+        hair_boundary_images,
+        hand_boundary_images,
+        cloth_boundary_images,
+        occluded_boundary_images,
         face_confidence_images,
         face_preserve_images,
         conditioning_mode,
@@ -575,6 +612,26 @@ class WanAnimate:
             torch.as_tensor(np.asarray(face_preserve_images), dtype=torch.float32)
             if face_preserve_images is not None else None
         )
+        face_boundary = (
+            torch.as_tensor(np.asarray(face_boundary_images), dtype=torch.float32)
+            if face_boundary_images is not None else None
+        )
+        hair_boundary = (
+            torch.as_tensor(np.asarray(hair_boundary_images), dtype=torch.float32)
+            if hair_boundary_images is not None else None
+        )
+        hand_boundary = (
+            torch.as_tensor(np.asarray(hand_boundary_images), dtype=torch.float32)
+            if hand_boundary_images is not None else None
+        )
+        cloth_boundary = (
+            torch.as_tensor(np.asarray(cloth_boundary_images), dtype=torch.float32)
+            if cloth_boundary_images is not None else None
+        )
+        occluded_boundary = (
+            torch.as_tensor(np.asarray(occluded_boundary_images), dtype=torch.float32)
+            if occluded_boundary_images is not None else None
+        )
         boundary_conditioning = build_boundary_conditioning_maps(
             soft_alpha=np.asarray(soft_alpha_images) if soft_alpha_images is not None else None,
             alpha_v2=np.asarray(alpha_v2_images) if alpha_v2_images is not None else None,
@@ -634,6 +691,11 @@ class WanAnimate:
             uncertainty_map=uncertainty_map,
             face_preserve=face_preserve_map,
             face_confidence=face_confidence_map,
+            face_boundary=face_boundary,
+            hair_boundary=hair_boundary,
+            hand_boundary=hand_boundary,
+            cloth_boundary=cloth_boundary,
+            occluded_boundary=occluded_boundary,
             conditioning_mode=conditioning_mode,
             structure_guard_strength=structure_guard_strength,
             mode=mask_mode,
@@ -686,6 +748,11 @@ class WanAnimate:
             "detail_release_map": detail_release_map,
             "trimap_unknown_map": trimap_unknown_map,
             "edge_detail_map": edge_detail_map,
+            "face_boundary": face_boundary,
+            "hair_boundary": hair_boundary,
+            "hand_boundary": hand_boundary,
+            "cloth_boundary": cloth_boundary,
+            "occluded_boundary": occluded_boundary,
             "boundary_conditioning_summary": boundary_conditioning["summary"],
             "conditioning_mode": conditioning_mode,
             "structure_guard_strength": float(structure_guard_strength),
@@ -749,6 +816,15 @@ class WanAnimate:
             mask_artifacts["trimap_unknown_map"] = replacement_masks["trimap_unknown_map"][:real_frame_len].cpu().numpy()
         if replacement_masks["edge_detail_map"] is not None:
             mask_artifacts["edge_detail_map"] = replacement_masks["edge_detail_map"][:real_frame_len].cpu().numpy()
+        for semantic_name in (
+            "face_boundary",
+            "hair_boundary",
+            "hand_boundary",
+            "cloth_boundary",
+            "occluded_boundary",
+        ):
+            if replacement_masks[semantic_name] is not None:
+                mask_artifacts[semantic_name] = replacement_masks[semantic_name][:real_frame_len].cpu().numpy()
         if replacement_masks["soft_band_latent"] is not None:
             mask_artifacts["latent_soft_band"] = replacement_masks["soft_band_latent"][:real_frame_len].cpu().numpy()
         if replacement_masks["soft_alpha_latent"] is not None:
@@ -1004,13 +1080,13 @@ class WanAnimate:
             raise ValueError(
                 f"temporal_handoff_strength must be in [0, 1]. Got {temporal_handoff_strength}."
             )
-        if replacement_conditioning_mode not in {"legacy", "rich", "rich_v1"}:
+        if replacement_conditioning_mode not in {"legacy", "rich", "rich_v1", "semantic_v1"}:
             raise ValueError(
                 f"Unsupported replacement_conditioning_mode: {replacement_conditioning_mode}"
             )
         if replacement_conditioning_mode == "rich":
             replacement_conditioning_mode = "rich_v1"
-        if boundary_refine_mode not in {"none", "deterministic", "v2"}:
+        if boundary_refine_mode not in {"none", "deterministic", "v2", "roi_v1", "semantic_v1"}:
             raise ValueError(f"Unsupported boundary_refine_mode: {boundary_refine_mode}")
         if not 0.0 <= float(boundary_refine_strength) <= 1.0:
             raise ValueError(f"boundary_refine_strength must be in [0, 1]. Got {boundary_refine_strength}.")
@@ -1106,6 +1182,11 @@ class WanAnimate:
         hair_edge_mask_images = None
         alpha_confidence_images = None
         alpha_source_provenance_images = None
+        face_boundary_images = None
+        hair_boundary_images = None
+        hand_boundary_images = None
+        cloth_boundary_images = None
+        occluded_boundary_images = None
         face_alpha_conditioning_images = None
         face_uncertainty_conditioning_images = None
         face_bbox_curve_data = None
@@ -1197,6 +1278,31 @@ class WanAnimate:
                     artifacts["alpha_source_provenance_v2"]["path"],
                     artifacts["alpha_source_provenance_v2"].get("format"),
                 )
+            if "face_boundary" in artifacts:
+                face_boundary_images = load_mask_artifact(
+                    artifacts["face_boundary"]["path"],
+                    artifacts["face_boundary"].get("format"),
+                )
+            if "hair_boundary" in artifacts:
+                hair_boundary_images = load_mask_artifact(
+                    artifacts["hair_boundary"]["path"],
+                    artifacts["hair_boundary"].get("format"),
+                )
+            if "hand_boundary" in artifacts:
+                hand_boundary_images = load_mask_artifact(
+                    artifacts["hand_boundary"]["path"],
+                    artifacts["hand_boundary"].get("format"),
+                )
+            if "cloth_boundary" in artifacts:
+                cloth_boundary_images = load_mask_artifact(
+                    artifacts["cloth_boundary"]["path"],
+                    artifacts["cloth_boundary"].get("format"),
+                )
+            if "occluded_boundary" in artifacts:
+                occluded_boundary_images = load_mask_artifact(
+                    artifacts["occluded_boundary"]["path"],
+                    artifacts["occluded_boundary"].get("format"),
+                )
             if "face_alpha" in artifacts:
                 face_alpha_conditioning_images = load_mask_artifact(
                     artifacts["face_alpha"]["path"],
@@ -1237,6 +1343,11 @@ class WanAnimate:
                 hair_edge_mask_images=hair_edge_mask_images,
                 alpha_confidence_images=alpha_confidence_images,
                 alpha_source_provenance_images=alpha_source_provenance_images,
+                face_boundary_images=face_boundary_images,
+                hair_boundary_images=hair_boundary_images,
+                hand_boundary_images=hand_boundary_images,
+                cloth_boundary_images=cloth_boundary_images,
+                occluded_boundary_images=occluded_boundary_images,
             )
             bg_images = self.inputs_padding(bg_images, target_len)
             person_mask_images = self.inputs_padding(person_mask_images, target_len)
@@ -1276,6 +1387,16 @@ class WanAnimate:
                 alpha_confidence_images = self.inputs_padding(alpha_confidence_images, target_len)
             if alpha_source_provenance_images is not None:
                 alpha_source_provenance_images = self.inputs_padding(alpha_source_provenance_images, target_len)
+            if face_boundary_images is not None:
+                face_boundary_images = self.inputs_padding(face_boundary_images, target_len)
+            if hair_boundary_images is not None:
+                hair_boundary_images = self.inputs_padding(hair_boundary_images, target_len)
+            if hand_boundary_images is not None:
+                hand_boundary_images = self.inputs_padding(hand_boundary_images, target_len)
+            if cloth_boundary_images is not None:
+                cloth_boundary_images = self.inputs_padding(cloth_boundary_images, target_len)
+            if occluded_boundary_images is not None:
+                occluded_boundary_images = self.inputs_padding(occluded_boundary_images, target_len)
             if face_alpha_conditioning_images is not None:
                 face_alpha_conditioning_images = self.inputs_padding(face_alpha_conditioning_images, target_len)
             if face_uncertainty_conditioning_images is not None:
@@ -1361,6 +1482,11 @@ class WanAnimate:
                 alpha_source_provenance_images=(
                     np.asarray(alpha_source_provenance_images) if alpha_source_provenance_images is not None else None
                 ),
+                face_boundary_images=np.asarray(face_boundary_images) if face_boundary_images is not None else None,
+                hair_boundary_images=np.asarray(hair_boundary_images) if hair_boundary_images is not None else None,
+                hand_boundary_images=np.asarray(hand_boundary_images) if hand_boundary_images is not None else None,
+                cloth_boundary_images=np.asarray(cloth_boundary_images) if cloth_boundary_images is not None else None,
+                occluded_boundary_images=np.asarray(occluded_boundary_images) if occluded_boundary_images is not None else None,
                 face_confidence_images=(
                     face_conditioning["face_confidence_map"] if face_conditioning is not None else None
                 ),
@@ -1455,6 +1581,11 @@ class WanAnimate:
             "hard_foreground_available": bool(hard_foreground_images is not None) if replace_flag else False,
             "soft_alpha_available": bool(soft_alpha_images is not None) if replace_flag else False,
             "boundary_band_available": bool(boundary_band_images is not None) if replace_flag else False,
+            "face_boundary_available": bool(face_boundary_images is not None) if replace_flag else False,
+            "hair_boundary_available": bool(hair_boundary_images is not None) if replace_flag else False,
+            "hand_boundary_available": bool(hand_boundary_images is not None) if replace_flag else False,
+            "cloth_boundary_available": bool(cloth_boundary_images is not None) if replace_flag else False,
+            "occluded_boundary_available": bool(occluded_boundary_images is not None) if replace_flag else False,
             "background_keep_prior_available": bool(background_keep_prior_images is not None) if replace_flag else False,
             "visible_support_available": bool(visible_support_images is not None) if replace_flag else False,
             "unresolved_region_available": bool(unresolved_region_images is not None) if replace_flag else False,

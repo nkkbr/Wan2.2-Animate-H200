@@ -33,6 +33,11 @@ FACE_ALPHA_SEMANTICS = "face_alpha"
 FACE_UNCERTAINTY_SEMANTICS = "face_uncertainty"
 FACE_PARSING_SEMANTICS = "face_parsing_v1"
 POSE_UNCERTAINTY_SEMANTICS = "pose_uncertainty"
+FACE_BOUNDARY_SEMANTICS = "face_boundary"
+HAIR_BOUNDARY_SEMANTICS = "hair_boundary"
+HAND_BOUNDARY_SEMANTICS = "hand_boundary"
+CLOTH_BOUNDARY_SEMANTICS = "cloth_boundary"
+OCCLUDED_BOUNDARY_SEMANTICS = "occluded_boundary"
 DEFAULT_REFERT_NUM = 5
 
 
@@ -433,6 +438,31 @@ def validate_preprocess_metadata(metadata: dict, src_root_path: str | Path) -> N
                 src_files["pose_uncertainty"].get("mask_semantics") == POSE_UNCERTAINTY_SEMANTICS,
                 "pose_uncertainty artifact semantics mismatch.",
             )
+        if "face_boundary" in src_files:
+            _require(
+                src_files["face_boundary"].get("mask_semantics") == FACE_BOUNDARY_SEMANTICS,
+                "face_boundary artifact semantics mismatch.",
+            )
+        if "hair_boundary" in src_files:
+            _require(
+                src_files["hair_boundary"].get("mask_semantics") == HAIR_BOUNDARY_SEMANTICS,
+                "hair_boundary artifact semantics mismatch.",
+            )
+        if "hand_boundary" in src_files:
+            _require(
+                src_files["hand_boundary"].get("mask_semantics") == HAND_BOUNDARY_SEMANTICS,
+                "hand_boundary artifact semantics mismatch.",
+            )
+        if "cloth_boundary" in src_files:
+            _require(
+                src_files["cloth_boundary"].get("mask_semantics") == CLOTH_BOUNDARY_SEMANTICS,
+                "cloth_boundary artifact semantics mismatch.",
+            )
+        if "occluded_boundary" in src_files:
+            _require(
+                src_files["occluded_boundary"].get("mask_semantics") == OCCLUDED_BOUNDARY_SEMANTICS,
+                "occluded_boundary artifact semantics mismatch.",
+            )
 
     root = Path(src_root_path)
     for name, artifact in src_files.items():
@@ -500,6 +530,11 @@ def resolve_preprocess_artifacts(
                 "face_alpha",
                 "face_parsing",
                 "face_uncertainty",
+                "face_boundary",
+                "hair_boundary",
+                "hand_boundary",
+                "cloth_boundary",
+                "occluded_boundary",
                 "pose_tracks",
                 "limb_tracks",
                 "hand_tracks",
@@ -536,6 +571,11 @@ def validate_loaded_preprocess_bundle(
     hair_edge_mask_images: np.ndarray | None = None,
     alpha_confidence_images: np.ndarray | None = None,
     alpha_source_provenance_images: np.ndarray | None = None,
+    face_boundary_images: np.ndarray | None = None,
+    hair_boundary_images: np.ndarray | None = None,
+    hand_boundary_images: np.ndarray | None = None,
+    cloth_boundary_images: np.ndarray | None = None,
+    occluded_boundary_images: np.ndarray | None = None,
 ) -> None:
     validate_rgb_video("conditioning frames", cond_images)
     validate_rgb_video("face frames", face_images)
@@ -667,6 +707,19 @@ def validate_loaded_preprocess_bundle(
                  f"alpha source provenance frame count {alpha_source_provenance_images.shape[0]} does not match pose frame count {frame_count}.")
         _require(alpha_source_provenance_images.shape[1:3] == (cond_height, cond_width),
                  "alpha source provenance size must match pose video size.")
+    for name, value in (
+        ("face boundary", face_boundary_images),
+        ("hair boundary", hair_boundary_images),
+        ("hand boundary", hand_boundary_images),
+        ("cloth boundary", cloth_boundary_images),
+        ("occluded boundary", occluded_boundary_images),
+    ):
+        if value is not None:
+            validate_person_mask_frames(f"{name} frames", value)
+            _require(value.shape[0] == frame_count,
+                     f"{name} frame count {value.shape[0]} does not match pose frame count {frame_count}.")
+            _require(value.shape[1:3] == (cond_height, cond_width),
+                     f"{name} size must match pose video size.")
 
     if metadata is None:
         return
@@ -863,3 +916,22 @@ def validate_loaded_preprocess_bundle(
             uncertainty_meta.get("mask_semantics") == UNCERTAINTY_MAP_SEMANTICS,
             "uncertainty_map artifact semantics mismatch.",
         )
+    for key, value, semantics in (
+        ("face_boundary", face_boundary_images, FACE_BOUNDARY_SEMANTICS),
+        ("hair_boundary", hair_boundary_images, HAIR_BOUNDARY_SEMANTICS),
+        ("hand_boundary", hand_boundary_images, HAND_BOUNDARY_SEMANTICS),
+        ("cloth_boundary", cloth_boundary_images, CLOTH_BOUNDARY_SEMANTICS),
+        ("occluded_boundary", occluded_boundary_images, OCCLUDED_BOUNDARY_SEMANTICS),
+    ):
+        if value is not None:
+            _require(key in metadata["src_files"], f"{key} frames were loaded but metadata has no {key} artifact.")
+            artifact_meta = metadata["src_files"][key]
+            _require(artifact_meta["frame_count"] == value.shape[0], f"{key} artifact frame_count mismatch.")
+            _require(
+                artifact_meta["height"] == value.shape[1] and artifact_meta["width"] == value.shape[2],
+                f"{key} artifact size mismatch.",
+            )
+            _require(
+                artifact_meta.get("mask_semantics") == semantics,
+                f"{key} artifact semantics mismatch.",
+            )

@@ -48,6 +48,11 @@ def compose_background_keep_mask(
     uncertainty_map: torch.Tensor | np.ndarray | None = None,
     face_preserve: torch.Tensor | np.ndarray | None = None,
     face_confidence: torch.Tensor | np.ndarray | None = None,
+    face_boundary: torch.Tensor | np.ndarray | None = None,
+    hair_boundary: torch.Tensor | np.ndarray | None = None,
+    hand_boundary: torch.Tensor | np.ndarray | None = None,
+    cloth_boundary: torch.Tensor | np.ndarray | None = None,
+    occluded_boundary: torch.Tensor | np.ndarray | None = None,
     conditioning_mode: str = "legacy",
     structure_guard_strength: float = 1.0,
     mode: str = "soft_band",
@@ -59,8 +64,21 @@ def compose_background_keep_mask(
     background_keep = 1.0 - torch.clamp(person_mask, 0.0, 1.0)
     if mode == "hard":
         return torch.clamp(background_keep, 0.0, 1.0)
-    if conditioning_mode not in {"legacy", "rich", "rich_v1"}:
+    if conditioning_mode not in {"legacy", "rich", "rich_v1", "semantic_v1"}:
         raise ValueError(f"Unsupported replacement conditioning mode: {conditioning_mode}")
+
+    def _to_tensor(value):
+        if value is None:
+            return None
+        if not isinstance(value, torch.Tensor):
+            value = torch.as_tensor(value, dtype=torch.float32)
+        return torch.clamp(value.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
+
+    face_boundary = _to_tensor(face_boundary)
+    hair_boundary = _to_tensor(hair_boundary)
+    hand_boundary = _to_tensor(hand_boundary)
+    cloth_boundary = _to_tensor(cloth_boundary)
+    occluded_boundary = _to_tensor(occluded_boundary)
 
     if background_keep_prior is not None:
         if not isinstance(background_keep_prior, torch.Tensor):
@@ -86,7 +104,7 @@ def compose_background_keep_mask(
             background_keep = background_keep * (
                 1.0 - 0.75 * torch.clamp(unresolved_region.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
             )
-        if conditioning_mode in {"rich", "rich_v1"}:
+        if conditioning_mode in {"rich", "rich_v1", "semantic_v1"}:
             if uncertainty_map is not None:
                 if not isinstance(uncertainty_map, torch.Tensor):
                     uncertainty_map = torch.as_tensor(uncertainty_map, dtype=torch.float32)
@@ -115,6 +133,21 @@ def compose_background_keep_mask(
                     * torch.clamp(face_confidence.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
                     * torch.clamp(soft_band.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
                 )
+            if conditioning_mode == "semantic_v1":
+                if face_boundary is not None:
+                    background_keep = background_keep * (1.0 - 0.18 * face_boundary)
+                if hair_boundary is not None:
+                    background_keep = background_keep * (1.0 - 0.28 * hair_boundary)
+                if hand_boundary is not None:
+                    background_keep = background_keep * (1.0 - 0.22 * hand_boundary)
+                if cloth_boundary is not None:
+                    background_keep = background_keep * (1.0 - 0.12 * cloth_boundary)
+                if occluded_boundary is not None:
+                    background_keep = torch.clamp(
+                        background_keep + 0.16 * occluded_boundary * torch.clamp(background_keep, 0.0, 1.0),
+                        0.0,
+                        1.0,
+                    )
             background_keep = background_keep * float(np.clip(structure_guard_strength, 0.0, 1.0))
         return torch.clamp(background_keep, 0.0, 1.0)
     if mode != "soft_band":
@@ -142,7 +175,7 @@ def compose_background_keep_mask(
         soft_band = torch.as_tensor(soft_band, dtype=torch.float32)
     soft_band = soft_band.to(dtype=torch.float32, device=background_keep.device)
     boundary_strength = max(0.0, min(float(boundary_strength), 1.0))
-    if conditioning_mode in {"rich", "rich_v1"}:
+    if conditioning_mode in {"rich", "rich_v1", "semantic_v1"}:
         if uncertainty_map is not None:
             if not isinstance(uncertainty_map, torch.Tensor):
                 uncertainty_map = torch.as_tensor(uncertainty_map, dtype=torch.float32)
@@ -172,6 +205,19 @@ def compose_background_keep_mask(
             boundary_strength = boundary_strength + 0.10 * detail_release_map
         if trimap_unknown_map is not None:
             boundary_strength = boundary_strength + 0.08 * trimap_unknown_map
+        if conditioning_mode == "semantic_v1":
+            semantic_release = torch.zeros_like(background_keep, dtype=torch.float32)
+            if face_boundary is not None:
+                semantic_release = semantic_release + 0.18 * face_boundary
+            if hair_boundary is not None:
+                semantic_release = semantic_release + 0.26 * hair_boundary
+            if hand_boundary is not None:
+                semantic_release = semantic_release + 0.22 * hand_boundary
+            if cloth_boundary is not None:
+                semantic_release = semantic_release + 0.12 * cloth_boundary
+            if occluded_boundary is not None:
+                semantic_release = semantic_release - 0.24 * occluded_boundary
+            boundary_strength = torch.clamp(boundary_strength * (1.0 + semantic_release), 0.0, 1.25)
     background_keep = background_keep - boundary_strength * torch.clamp(soft_band, 0.0, 1.0)
     return torch.clamp(background_keep, 0.0, 1.0)
 
