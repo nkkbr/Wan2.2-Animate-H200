@@ -1086,7 +1086,7 @@ class WanAnimate:
             )
         if replacement_conditioning_mode == "rich":
             replacement_conditioning_mode = "rich_v1"
-        if boundary_refine_mode not in {"none", "deterministic", "v2", "roi_v1", "semantic_v1"}:
+        if boundary_refine_mode not in {"none", "deterministic", "v2", "roi_v1", "semantic_v1", "local_edge_v1"}:
             raise ValueError(f"Unsupported boundary_refine_mode: {boundary_refine_mode}")
         if not 0.0 <= float(boundary_refine_strength) <= 1.0:
             raise ValueError(f"boundary_refine_strength must be in [0, 1]. Got {boundary_refine_strength}.")

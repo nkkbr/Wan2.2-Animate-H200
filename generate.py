@@ -140,8 +140,8 @@ def _validate_args(args):
         assert args.replacement_conditioning_mode in {"legacy", "rich", "rich_v1", "semantic_v1"}, (
             "--replacement_conditioning_mode must be one of: legacy, rich, rich_v1, semantic_v1."
         )
-        assert args.boundary_refine_mode in {"none", "deterministic", "v2", "roi_v1", "semantic_v1"}, (
-            "--boundary_refine_mode must be one of: none, deterministic, v2, roi_v1, semantic_v1."
+        assert args.boundary_refine_mode in {"none", "deterministic", "v2", "roi_v1", "semantic_v1", "local_edge_v1"}, (
+            "--boundary_refine_mode must be one of: none, deterministic, v2, roi_v1, semantic_v1, local_edge_v1."
         )
         assert 0.0 <= args.boundary_refine_strength <= 1.0, "--boundary_refine_strength must be in [0, 1]."
         assert 0.0 <= args.boundary_refine_sharpen <= 1.0, "--boundary_refine_sharpen must be in [0, 1]."
@@ -477,8 +477,8 @@ def _parse_args():
         "--boundary_refine_mode",
         type=str,
         default="none",
-        choices=["none", "deterministic", "v2", "roi_v1", "semantic_v1"],
-        help="Optional pixel-domain boundary refinement mode applied after Wan-Animate decoding. 'semantic_v1' specializes refine behavior for face/hair/hand/cloth/occluded boundary classes."
+        choices=["none", "deterministic", "v2", "roi_v1", "semantic_v1", "local_edge_v1"],
+        help="Optional pixel-domain boundary refinement mode applied after Wan-Animate decoding. 'semantic_v1' specializes refine behavior for face/hair/hand/cloth/occluded boundary classes. 'local_edge_v1' adds ROI-local detail restoration on top of the ROI refine path."
     )
     parser.add_argument(
         "--boundary_refine_strength",

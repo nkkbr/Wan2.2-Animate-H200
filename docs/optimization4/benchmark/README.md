@@ -32,6 +32,8 @@
   - Step 04 的正式结论与三轮 boundary ROI two-stage refine AB 结果
 - `06-semantic-boundary-specialization-findings.md`
   - Step 06 的正式结论与三轮 semantic boundary specialization AB 结果
+- `07-local-edge-super-resolution-detail-restoration-findings.md`
+  - Step 07 的正式结论与三轮 local edge restoration AB 结果
 
 
 ## 3. 关键脚本
@@ -158,6 +160,39 @@ python scripts/eval/compute_semantic_boundary_metrics.py \
 python scripts/eval/evaluate_optimization4_semantic_boundary_benchmark.py \
   --summary_json runs/optimization4_step06_round1_ab/summary.json \
   --output_json runs/optimization4_step06_round1_ab/gate_result.json
+```
+
+### 3.16 synthetic local edge restoration 检查
+
+```bash
+python scripts/eval/check_local_edge_restoration.py
+```
+
+### 3.17 运行 Step 07 local edge restoration AB
+
+```bash
+python scripts/eval/run_optimization4_local_edge_benchmark.py \
+  --suite_name optimization4_step07_round1_ab \
+  --src_root_path runs/optimization4_step06_round1_preprocess/preprocess
+```
+
+### 3.18 计算 Step 07 local edge restoration 指标
+
+```bash
+python scripts/eval/compute_local_edge_restoration_metrics.py \
+  --before runs/optimization4_step07_round1_ab/roi_v1/outputs/roi_v1.mkv \
+  --after runs/optimization4_step07_round1_ab/local_edge_v1/outputs/local_edge_v1.mkv \
+  --src_root_path runs/optimization4_step06_round1_preprocess/preprocess \
+  --debug_dir runs/optimization4_step07_round1_ab/local_edge_v1/debug/generate/boundary_refinement \
+  --output_json runs/optimization4_step07_round1_ab/local_edge_v1_local_metrics.json
+```
+
+### 3.19 评估 Step 07 local edge restoration gate
+
+```bash
+python scripts/eval/evaluate_optimization4_local_edge_benchmark.py \
+  --summary_json runs/optimization4_step07_round1_ab/summary.json \
+  --output_json runs/optimization4_step07_round1_ab/gate_result.json
 ```
 
 

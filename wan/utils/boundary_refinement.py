@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 import torch
 
+from .local_edge_restoration import restore_local_edge_roi
 from .media_io import write_output_frames, write_person_mask_artifact
 
 
@@ -201,10 +202,10 @@ def refine_boundary_frames(
         else np.clip(person_mask + outer_band, 0.0, 1.0)[..., None]
     )
 
-    if mode not in {"deterministic", "v2", "roi_v1", "semantic_v1"}:
+    if mode not in {"deterministic", "v2", "roi_v1", "semantic_v1", "local_edge_v1"}:
         raise ValueError(f"Unsupported boundary refinement mode: {mode}")
 
-    if mode == "roi_v1":
+    if mode in {"roi_v1", "local_edge_v1"}:
         background_confidence_local = (
             np.ones_like(person_mask, dtype=np.float32)
             if background_confidence is None else np.clip(np.asarray(background_confidence, dtype=np.float32), 0.0, 1.0)
@@ -237,6 +238,26 @@ def refine_boundary_frames(
             np.zeros_like(person_mask, dtype=np.float32)
             if edge_detail_map is None else np.clip(np.asarray(edge_detail_map, dtype=np.float32), 0.0, 1.0)
         )
+        face_boundary_local = (
+            np.zeros_like(person_mask, dtype=np.float32)
+            if face_boundary_map is None else np.clip(np.asarray(face_boundary_map, dtype=np.float32), 0.0, 1.0)
+        )
+        hair_boundary_local = (
+            np.zeros_like(person_mask, dtype=np.float32)
+            if hair_boundary_map is None else np.clip(np.asarray(hair_boundary_map, dtype=np.float32), 0.0, 1.0)
+        )
+        hand_boundary_local = (
+            np.zeros_like(person_mask, dtype=np.float32)
+            if hand_boundary_map is None else np.clip(np.asarray(hand_boundary_map, dtype=np.float32), 0.0, 1.0)
+        )
+        cloth_boundary_local = (
+            np.zeros_like(person_mask, dtype=np.float32)
+            if cloth_boundary_map is None else np.clip(np.asarray(cloth_boundary_map, dtype=np.float32), 0.0, 1.0)
+        )
+        occluded_boundary_local = (
+            np.zeros_like(person_mask, dtype=np.float32)
+            if occluded_boundary_map is None else np.clip(np.asarray(occluded_boundary_map, dtype=np.float32), 0.0, 1.0)
+        )
 
         roi_mask = build_boundary_roi_mask(
             person_mask=person_mask,
@@ -254,6 +275,9 @@ def refine_boundary_frames(
         refined_frames = generated_frames.copy()
         roi_blend_alpha = np.zeros_like(person_mask, dtype=np.float32)
         roi_scale_values = []
+        local_edge_focus_frames = np.zeros_like(person_mask, dtype=np.float32)
+        local_edge_gain_frames = np.zeros_like(person_mask, dtype=np.float32)
+        local_edge_feather_frames = np.zeros_like(person_mask, dtype=np.float32)
 
         for frame_idx, (x0, y0, x1, y1) in enumerate(roi_boxes):
             crop_w = max(1, x1 - x0)
@@ -283,6 +307,11 @@ def refine_boundary_frames(
             crop_detail_release = _crop_resize_mask(detail_release_local)[None]
             crop_trimap_unknown = _crop_resize_mask(trimap_unknown_local)[None]
             crop_edge_detail = _crop_resize_mask(edge_detail_local)[None]
+            crop_face_boundary = _crop_resize_mask(face_boundary_local)[None]
+            crop_hair_boundary = _crop_resize_mask(hair_boundary_local)[None]
+            crop_hand_boundary = _crop_resize_mask(hand_boundary_local)[None]
+            crop_cloth_boundary = _crop_resize_mask(cloth_boundary_local)[None]
+            crop_occluded_boundary = _crop_resize_mask(occluded_boundary_local)[None]
 
             crop_refined, crop_debug = refine_boundary_frames(
                 generated_frames=crop_generated,
@@ -295,6 +324,14 @@ def refine_boundary_frames(
                 occlusion_band=crop_occlusion_band,
                 face_preserve_map=crop_face_preserve,
                 face_confidence_map=crop_face_confidence,
+                detail_release_map=crop_detail_release if mode == "local_edge_v1" else None,
+                trimap_unknown_map=crop_trimap_unknown if mode == "local_edge_v1" else None,
+                edge_detail_map=crop_edge_detail if mode == "local_edge_v1" else None,
+                face_boundary_map=crop_face_boundary if mode == "local_edge_v1" else None,
+                hair_boundary_map=crop_hair_boundary if mode == "local_edge_v1" else None,
+                hand_boundary_map=crop_hand_boundary if mode == "local_edge_v1" else None,
+                cloth_boundary_map=crop_cloth_boundary if mode == "local_edge_v1" else None,
+                occluded_boundary_map=crop_occluded_boundary if mode == "local_edge_v1" else None,
                 structure_guard_strength=structure_guard_strength,
                 mode="semantic_v1",
                 strength=min(1.0, strength + 0.14),
@@ -304,6 +341,41 @@ def refine_boundary_frames(
             )
             crop_refined = crop_refined[0].astype(np.float32) / 255.0
             crop_generated_float = crop_generated[0].astype(np.float32) / 255.0
+
+            if mode == "local_edge_v1":
+                crop_refined, local_edge_debug = restore_local_edge_roi(
+                    original_rgb=crop_generated_float,
+                    refined_rgb=crop_refined,
+                    soft_alpha=crop_soft_alpha[0] if crop_soft_alpha is not None else crop_person_mask[0],
+                    outer_band=crop_soft_band[0],
+                    uncertainty_map=crop_uncertainty_map[0],
+                    detail_release_map=crop_detail_release[0],
+                    trimap_unknown_map=crop_trimap_unknown[0],
+                    edge_detail_map=crop_edge_detail[0],
+                    face_boundary_map=crop_face_boundary[0],
+                    hair_boundary_map=crop_hair_boundary[0],
+                    hand_boundary_map=crop_hand_boundary[0],
+                    cloth_boundary_map=crop_cloth_boundary[0],
+                    occluded_boundary_map=crop_occluded_boundary[0],
+                    sharpen=min(1.0, sharpen + 0.08),
+                    detail_strength=min(1.0, strength + 0.06),
+                    scale_factor=2.0 if max(crop_w, crop_h) <= 280 else 1.7,
+                )
+                local_edge_focus_full = _resize_mask_frame(local_edge_debug["local_edge_focus"], (crop_w, crop_h))
+                local_edge_gain_full = _resize_mask_frame(local_edge_debug["local_edge_gain"], (crop_w, crop_h))
+                local_edge_feather_full = _resize_mask_frame(local_edge_debug["local_edge_feather"], (crop_w, crop_h))
+                local_edge_focus_frames[frame_idx, y0:y1, x0:x1] = np.maximum(
+                    local_edge_focus_frames[frame_idx, y0:y1, x0:x1],
+                    local_edge_focus_full,
+                )
+                local_edge_gain_frames[frame_idx, y0:y1, x0:x1] = np.maximum(
+                    local_edge_gain_frames[frame_idx, y0:y1, x0:x1],
+                    local_edge_gain_full,
+                )
+                local_edge_feather_frames[frame_idx, y0:y1, x0:x1] = np.maximum(
+                    local_edge_feather_frames[frame_idx, y0:y1, x0:x1],
+                    local_edge_feather_full,
+                )
 
             crop_edge_focus = np.clip(
                 np.maximum.reduce(
@@ -394,6 +466,9 @@ def refine_boundary_frames(
             "roi_blend_alpha": roi_blend_alpha.astype(np.float32),
             "roi_area_ratio": float(roi_mask.mean()),
             "roi_scale_mean": float(np.mean(roi_scale_values)) if roi_scale_values else 1.0,
+            "local_edge_focus": local_edge_focus_frames.astype(np.float32),
+            "local_edge_gain": local_edge_gain_frames.astype(np.float32),
+            "local_edge_feather": local_edge_feather_frames.astype(np.float32),
             "roi_boxes": [
                 {"frame_index": int(i), "x0": int(box[0]), "y0": int(box[1]), "x1": int(box[2]), "y1": int(box[3])}
                 for i, box in enumerate(roi_boxes)
@@ -782,6 +857,9 @@ def write_boundary_refinement_debug_artifacts(
         "edge_boost_alpha",
         "roi_mask",
         "roi_blend_alpha",
+        "local_edge_focus",
+        "local_edge_gain",
+        "local_edge_feather",
         "face_boundary_map",
         "hair_boundary_map",
         "hand_boundary_map",
