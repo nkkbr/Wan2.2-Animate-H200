@@ -1,0 +1,53 @@
+{
+  "default_candidate": "default_precision",
+  "candidates": [
+    {
+      "name": "default_precision",
+      "is_default": true,
+      "description": "Current best single-candidate high-precision preprocess baseline from optimization3 Steps 02-06.",
+      "tags": ["default", "balanced"],
+      "extra_args": []
+    },
+    {
+      "name": "face_focus_highres",
+      "description": "Higher analysis resolution plus more conservative face rerun and tighter face tracking.",
+      "tags": ["face", "highres"],
+      "extra_args": [
+        "--analysis_resolution_area", "960", "540",
+        "--face_rerun_difficulty_threshold", "0.36",
+        "--face_difficulty_expand_ratio", "1.32",
+        "--face_tracking_smooth_strength", "0.92",
+        "--face_tracking_max_center_shift", "0.014",
+        "--multistage_face_bbox_extra_smooth", "0.10"
+      ]
+    },
+    {
+      "name": "motion_focus_highres",
+      "description": "Higher analysis resolution plus stronger multiscale pose/motion smoothing and local refine.",
+      "tags": ["motion", "highres"],
+      "extra_args": [
+        "--analysis_resolution_area", "960", "540",
+        "--pose_motion_body_bidirectional_strength", "0.90",
+        "--pose_motion_hand_bidirectional_strength", "0.86",
+        "--pose_motion_face_bidirectional_strength", "0.90",
+        "--pose_motion_local_refine_strength", "0.86",
+        "--pose_motion_velocity_spike_quantile", "0.84",
+        "--multistage_pose_extra_smooth", "0.14"
+      ]
+    },
+    {
+      "name": "boundary_background_highres",
+      "description": "Higher analysis resolution plus stronger background stabilization and wider transition support for difficult boundaries.",
+      "tags": ["boundary", "background", "highres"],
+      "extra_args": [
+        "--analysis_resolution_area", "960", "540",
+        "--soft_mask_band_width", "28",
+        "--soft_mask_blur_kernel", "7",
+        "--matting_trimap_outer_dilate", "16",
+        "--parsing_boundary_kernel", "13",
+        "--bg_temporal_smooth_strength", "0.18",
+        "--bg_video_global_blend_strength", "0.97"
+      ]
+    }
+  ]
+}

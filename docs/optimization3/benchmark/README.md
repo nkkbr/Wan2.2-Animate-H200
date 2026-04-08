@@ -40,6 +40,12 @@
   - Step 06 的正式执行结论、五轮 clean plate 2.0 对照与冻结判断
 - `07-generate-rich-signal-consumption-and-boundary-refinement-v2-findings.md`
   - Step 07 的正式执行结论、三轮 rich-signal generate AB 与 gate 冻结判断
+- `candidate_manifest.step08.json`
+  - Step 08 的高价值 preprocess candidate 清单
+- `candidate_score_policy.step08.json`
+  - Step 08 的综合评分权重与方向定义
+- `08-h200-multi-candidate-preprocess-and-auto-selection-findings.md`
+  - Step 08 的正式执行结论、多候选搜索与自动选优冻结判断
 
 
 ## 3. Benchmark 分层
@@ -138,6 +144,24 @@ python scripts/eval/run_generate_rich_signal_benchmark.py \
 python scripts/eval/evaluate_generate_rich_signal_benchmark.py \
   --summary_json runs/optimization3_step07_roundX_ab/summary.json \
   --output_json runs/optimization3_step07_roundX_ab/gate_result.json
+```
+
+### 5.5 Step 08 preprocess candidate search
+
+```bash
+python scripts/eval/run_optimization3_candidate_search.py \
+  --candidate_manifest docs/optimization3/benchmark/candidate_manifest.step08.json \
+  --score_policy_json docs/optimization3/benchmark/candidate_score_policy.step08.json \
+  --suite_name optimization3_step08_candidate_search
+```
+
+### 5.6 Step 08 standalone selection
+
+```bash
+python scripts/eval/select_best_preprocess_candidate.py \
+  --summary_json runs/optimization3_step08_candidate_search/repeat_01/candidate_summary.json \
+  --score_policy_json docs/optimization3/benchmark/candidate_score_policy.step08.json \
+  --output_json runs/optimization3_step08_candidate_search/repeat_01/selection_result.json
 ```
 
 

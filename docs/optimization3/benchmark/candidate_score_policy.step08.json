@@ -1,0 +1,139 @@
+{
+  "groups": {
+    "boundary": {
+      "weight": 0.28,
+      "metrics": [
+        {
+          "name": "boundary_focus",
+          "path": "metrics.boundary.uncertainty_transition_focus_ratio_dilated",
+          "direction": "higher",
+          "weight": 0.45
+        },
+        {
+          "name": "boundary_focus_to_interior",
+          "path": "metrics.boundary.uncertainty_transition_to_interior_ratio",
+          "direction": "higher",
+          "transform": "log1p",
+          "weight": 0.35
+        },
+        {
+          "name": "boundary_uncertainty_penalty",
+          "path": "metrics.boundary.uncertainty_mean",
+          "direction": "lower",
+          "weight": 0.2
+        }
+      ]
+    },
+    "face": {
+      "weight": 0.26,
+      "metrics": [
+        {
+          "name": "face_center_jitter",
+          "path": "metrics.face.center_jitter_mean",
+          "direction": "lower",
+          "weight": 0.4
+        },
+        {
+          "name": "face_width_jitter",
+          "path": "metrics.face.width_jitter_mean",
+          "direction": "lower",
+          "weight": 0.2
+        },
+        {
+          "name": "face_valid_points",
+          "path": "metrics.face.valid_face_points_mean",
+          "direction": "higher",
+          "weight": 0.2
+        },
+        {
+          "name": "face_landmark_confidence",
+          "path": "metrics.face.landmark_confidence_mean",
+          "direction": "higher",
+          "weight": 0.2
+        }
+      ]
+    },
+    "pose": {
+      "weight": 0.24,
+      "metrics": [
+        {
+          "name": "pose_body_conf_delta",
+          "path": "metrics.pose.body_conf_delta_mean",
+          "direction": "lower",
+          "weight": 0.2
+        },
+        {
+          "name": "pose_body_jitter",
+          "path": "metrics.pose.body_jitter_mean",
+          "direction": "lower",
+          "weight": 0.25
+        },
+        {
+          "name": "pose_hand_jitter",
+          "path": "metrics.pose.hand_jitter_mean",
+          "direction": "lower",
+          "weight": 0.2
+        },
+        {
+          "name": "pose_velocity_spike_rate",
+          "path": "metrics.pose.velocity_spike_rate",
+          "direction": "lower",
+          "weight": 0.15
+        },
+        {
+          "name": "pose_limb_continuity",
+          "path": "metrics.pose.limb_continuity_score",
+          "direction": "higher",
+          "weight": 0.2
+        }
+      ]
+    },
+    "background": {
+      "weight": 0.18,
+      "metrics": [
+        {
+          "name": "bg_temporal_fluctuation",
+          "path": "metrics.background.background_stats.temporal_fluctuation_mean",
+          "direction": "lower",
+          "weight": 0.35
+        },
+        {
+          "name": "bg_band_stability",
+          "path": "metrics.background.background_stats.band_adjacent_background_stability",
+          "direction": "lower",
+          "weight": 0.35
+        },
+        {
+          "name": "bg_unresolved_ratio",
+          "path": "metrics.background.background_stats.unresolved_ratio_mean",
+          "direction": "lower",
+          "weight": 0.2
+        },
+        {
+          "name": "bg_support_conf_corr",
+          "path": "metrics.background.support_confidence_corr",
+          "direction": "higher",
+          "weight": 0.1
+        }
+      ]
+    },
+    "runtime": {
+      "weight": 0.04,
+      "metrics": [
+        {
+          "name": "runtime_total_seconds",
+          "path": "metrics.runtime.stage_seconds.total",
+          "direction": "lower",
+          "transform": "log1p",
+          "weight": 0.75
+        },
+        {
+          "name": "runtime_peak_memory_gb",
+          "path": "metrics.runtime.peak_memory_gb",
+          "direction": "lower",
+          "weight": 0.25
+        }
+      ]
+    }
+  }
+}
