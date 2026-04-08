@@ -20,8 +20,10 @@ from wan.utils.animate_contract import (
     BACKGROUND_KEEP_PRIOR_SEMANTICS,
     BOUNDARY_BAND_SEMANTICS,
     HARD_FOREGROUND_SEMANTICS,
+    OCCLUSION_BAND_SEMANTICS,
     SOFT_ALPHA_SEMANTICS,
     SOFT_BAND_SEMANTICS,
+    UNCERTAINTY_MAP_SEMANTICS,
     build_preprocess_metadata,
     resolve_preprocess_artifacts,
     validate_loaded_preprocess_bundle,
@@ -58,12 +60,12 @@ def _make_pose_meta():
     )
     right_hand = np.array(
         [
-            [0.73, 0.60, 1.0],
-            [0.75, 0.61, 1.0],
-            [0.77, 0.62, 1.0],
-            [0.79, 0.63, 1.0],
-            [0.80, 0.61, 1.0],
-            [0.78, 0.59, 1.0],
+            [0.54, 0.39, 1.0],
+            [0.56, 0.38, 1.0],
+            [0.58, 0.39, 1.0],
+            [0.59, 0.41, 1.0],
+            [0.58, 0.43, 1.0],
+            [0.55, 0.42, 1.0],
         ],
         dtype=np.float32,
     )
@@ -80,22 +82,28 @@ def _make_synthetic_case(frame_count: int = 6, height: int = 96, width: int = 12
     hard_mask = np.zeros((frame_count, height, width), dtype=np.float32)
     hard_mask[:, 28:76, 40:88] = 1.0
     frames[:, 28:76, 40:88] = np.array([208, 180, 166], dtype=np.uint8)
+    label_alpha = hard_mask.copy()
 
     # Hair-like thin protrusions above the hard mask and hand-like thin structures on both sides.
     for index in range(frame_count):
         for x in (48, 54, 60, 66, 72, 78):
             frames[index, 20:28, x:x + 2] = np.array([214, 188, 176], dtype=np.uint8)
+            label_alpha[index, 20:28, x:x + 2] = 1.0
         frames[index, 56:60, 26:40] = np.array([210, 184, 170], dtype=np.uint8)
-        frames[index, 56:60, 88:102] = np.array([210, 184, 170], dtype=np.uint8)
+        label_alpha[index, 56:60, 26:40] = 1.0
+        frames[index, 24:40, 56:74] = np.array([205, 176, 165], dtype=np.uint8)
+    label_boundary = build_soft_boundary_band(label_alpha, band_width=4, blur_kernel_size=3)
+    label_occlusion = np.zeros_like(hard_mask, dtype=np.float32)
+    label_occlusion[:, 22:44, 50:74] = 1.0
 
     soft_band = build_soft_boundary_band(hard_mask, band_width=4, blur_kernel_size=3)
     pose_metas = [_make_pose_meta() for _ in range(frame_count)]
     face_bboxes = [(50, 74, 22, 44) for _ in range(frame_count)]
-    return frames, background, hard_mask, soft_band, pose_metas, face_bboxes
+    return frames, background, hard_mask, label_alpha, label_boundary, label_occlusion, soft_band, pose_metas, face_bboxes
 
 
 def main():
-    frames, background, hard_mask, soft_band, pose_metas, face_bboxes = _make_synthetic_case()
+    frames, background, hard_mask, label_alpha, label_boundary, label_occlusion, soft_band, pose_metas, face_bboxes = _make_synthetic_case()
     parsing = run_parsing_adapter(
         frames=frames,
         hard_mask=hard_mask,
@@ -115,12 +123,21 @@ def main():
         soft_band=soft_band,
         parsing_output=parsing,
         matting_output=matting,
-        mode="heuristic",
+        mode="v2",
+    )
+    legacy = fuse_boundary_signals(
+        hard_mask=hard_mask,
+        soft_band=soft_band,
+        parsing_output=parsing,
+        matting_output=matting,
+        mode="legacy",
     )
 
     assert fusion["hard_foreground"].shape == hard_mask.shape
     assert fusion["soft_alpha"].shape == hard_mask.shape
     assert fusion["boundary_band"].shape == hard_mask.shape
+    assert fusion["occlusion_band"].shape == hard_mask.shape
+    assert fusion["uncertainty_map"].shape == hard_mask.shape
     assert fusion["background_keep_prior"].shape == hard_mask.shape
     assert float(fusion["soft_alpha"].max()) <= 1.0 and float(fusion["soft_alpha"].min()) >= 0.0
 
@@ -128,14 +145,43 @@ def main():
     hair_region[:, 20:28, 48:80] = True
     hand_region = np.zeros_like(hard_mask, dtype=bool)
     hand_region[:, 55:61, 24:40] = True
-    hand_region[:, 55:61, 88:104] = True
     thin_region = hair_region | hand_region
+    occlusion_region = np.zeros_like(hard_mask, dtype=bool)
+    occlusion_region[:, 22:44, 50:74] = True
     assert float(fusion["boundary_band"][thin_region].mean()) > float(soft_band[thin_region].mean())
     assert float(fusion["soft_alpha"][thin_region].mean()) > float(soft_band[thin_region].mean())
     center_region = fusion["hard_foreground"][:, 40:64, 50:78]
     assert float(center_region.mean()) > 0.99
     far_background = fusion["background_keep_prior"][:, :12, :12]
     assert float(far_background.mean()) > 0.95
+    assert float(fusion["occlusion_band"][occlusion_region].mean()) > 0.30
+    assert float(fusion["uncertainty_map"][thin_region | occlusion_region].mean()) > float(fusion["uncertainty_map"][:, :12, :12].mean())
+
+    fusion_alpha_mae = float(np.abs(fusion["soft_alpha"] - label_alpha).mean())
+    legacy_alpha_mae = float(np.abs(legacy["soft_alpha"] - label_alpha).mean())
+    assert fusion_alpha_mae <= legacy_alpha_mae * 1.01
+
+    trimap_kernel = np.ones((13, 13), dtype=np.uint8)
+    trimap = cv2.dilate((label_alpha[0] > 0.5).astype(np.uint8), trimap_kernel, iterations=1) - cv2.erode(
+        (label_alpha[0] > 0.5).astype(np.uint8), trimap_kernel, iterations=1
+    )
+    legacy_trimap_error = float((np.abs(legacy["soft_alpha"][0] - label_alpha[0]) * trimap).sum() / max(trimap.sum(), 1))
+    fusion_trimap_error = float((np.abs(fusion["soft_alpha"][0] - label_alpha[0]) * trimap).sum() / max(trimap.sum(), 1))
+    assert fusion_trimap_error <= legacy_trimap_error * 1.01
+
+    fusion_band = (fusion["boundary_band"] > 0.5).astype(np.uint8)
+    legacy_band = (legacy["boundary_band"] > 0.5).astype(np.uint8)
+    label_band = (label_boundary > 0.5).astype(np.uint8)
+    fusion_inter = np.logical_and(fusion_band > 0, label_band > 0).sum()
+    fusion_union = np.logical_or(fusion_band > 0, label_band > 0).sum()
+    legacy_inter = np.logical_and(legacy_band > 0, label_band > 0).sum()
+    legacy_union = np.logical_or(legacy_band > 0, label_band > 0).sum()
+    assert float(fusion_inter / max(fusion_union, 1)) > float(legacy_inter / max(legacy_union, 1))
+
+    error_mask = (np.abs(fusion["soft_alpha"] - label_alpha) > 0.10).astype(np.uint8)
+    high_uncertainty = (fusion["uncertainty_map"] >= np.quantile(fusion["uncertainty_map"], 0.8)).astype(np.uint8)
+    coverage = float(np.logical_and(high_uncertainty > 0, error_mask > 0).sum() / max(error_mask.sum(), 1))
+    assert coverage >= 0.50
 
     with tempfile.TemporaryDirectory() as tmpdir:
         root = Path(tmpdir)
@@ -180,6 +226,22 @@ def main():
             artifact_format="npz",
             fps=5.0,
             mask_semantics=BACKGROUND_KEEP_PRIOR_SEMANTICS,
+        )
+        occlusion_band_artifact = write_person_mask_artifact(
+            mask_frames=fusion["occlusion_band"],
+            output_root=root,
+            stem="src_occlusion_band",
+            artifact_format="npz",
+            fps=5.0,
+            mask_semantics=OCCLUSION_BAND_SEMANTICS,
+        )
+        uncertainty_map_artifact = write_person_mask_artifact(
+            mask_frames=fusion["uncertainty_map"],
+            output_root=root,
+            stem="src_uncertainty_map",
+            artifact_format="npz",
+            fps=5.0,
+            mask_semantics=UNCERTAINTY_MAP_SEMANTICS,
         )
         reference = np.full((height := frames.shape[1], width := frames.shape[2], 3), 127, dtype=np.uint8)
         ok = cv2.imwrite(str(root / "src_ref.png"), cv2.cvtColor(reference, cv2.COLOR_RGB2BGR))
@@ -226,10 +288,12 @@ def main():
                 "hard_foreground": {**person_mask_artifact, "mask_semantics": HARD_FOREGROUND_SEMANTICS},
                 "soft_alpha": soft_alpha_artifact,
                 "boundary_band": boundary_band_artifact,
+                "occlusion_band": occlusion_band_artifact,
+                "uncertainty_map": uncertainty_map_artifact,
                 "background_keep_prior": background_keep_prior_artifact,
             },
             soft_mask_settings={"soft_mask_mode": "soft_band", "soft_mask_band_width": 4, "soft_mask_blur_kernel": 3},
-            boundary_fusion_settings={"boundary_fusion_mode": "heuristic", "parsing_mode": "heuristic", "matting_mode": "heuristic"},
+            boundary_fusion_settings={"boundary_fusion_mode": "v2", "parsing_mode": "heuristic", "matting_mode": "heuristic"},
         )
         write_preprocess_metadata(root, metadata)
         artifacts, loaded_metadata = resolve_preprocess_artifacts(root, replace_flag=True)
@@ -244,6 +308,8 @@ def main():
             hard_foreground_images=load_mask_artifact(artifacts["hard_foreground"]["path"], artifacts["hard_foreground"]["format"]),
             soft_alpha_images=load_mask_artifact(artifacts["soft_alpha"]["path"], artifacts["soft_alpha"]["format"]),
             boundary_band_images=load_mask_artifact(artifacts["boundary_band"]["path"], artifacts["boundary_band"]["format"]),
+            occlusion_band_images=load_mask_artifact(artifacts["occlusion_band"]["path"], artifacts["occlusion_band"]["format"]),
+            uncertainty_map_images=load_mask_artifact(artifacts["uncertainty_map"]["path"], artifacts["uncertainty_map"]["format"]),
             background_keep_prior_images=load_mask_artifact(
                 artifacts["background_keep_prior"]["path"],
                 artifacts["background_keep_prior"]["format"],

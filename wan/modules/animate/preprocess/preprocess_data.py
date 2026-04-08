@@ -513,9 +513,9 @@ def _parse_args():
     parser.add_argument(
         "--boundary_fusion_mode",
         type=str,
-        default="heuristic",
-        choices=["none", "heuristic"],
-        help="Boundary fusion mode. 'heuristic' fuses SAM2, parsing-style priors, and matting-style alpha into richer boundary artifacts."
+        default="v2",
+        choices=["none", "legacy", "heuristic", "v2"],
+        help="Boundary fusion mode. 'legacy' preserves the optimization2 heuristic fusion, while 'v2' adds occlusion and uncertainty artifacts."
     )
     parser.add_argument(
         "--parsing_mode",

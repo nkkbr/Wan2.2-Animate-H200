@@ -22,6 +22,18 @@ DEFAULT_REFERENCE_PATH = "/home/user1/wan2.2/test1/Gemini_Generated_Image_2.png"
 DEFAULT_CKPT_PATH = "/home/user1/wan2.2/Wan2.2/Wan2.2-Animate-14B/process_checkpoint"
 
 
+def _default_python_bin() -> str:
+    override = os.environ.get("WAN_PYTHON")
+    candidates = [override, "/home/user1/miniconda3/envs/wan/bin/python", sys.executable]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return str(Path(candidate).resolve())
+    return sys.executable
+
+
+PYTHON = _default_python_bin()
+
+
 def _read_json(path: Path):
     if not path.exists():
         return None
@@ -39,7 +51,7 @@ def _signal_name(returncode: int):
 
 def _run_contract_check(preprocess_dir: Path):
     command = [
-        sys.executable,
+        PYTHON,
         "-X",
         "faulthandler",
         str(CONTRACT_SCRIPT),
@@ -120,7 +132,7 @@ def _load_pose_metrics(preprocess_dir: Path):
 
 def _build_command(args, run_dir: Path, profile: str):
     command = [
-        sys.executable,
+        PYTHON,
         "-X",
         "faulthandler",
         str(PREPROCESS_SCRIPT),

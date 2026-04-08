@@ -139,10 +139,12 @@ def run_parsing_adapter(
             "semantic_boundary_prior": zeros,
             "head_prior": zeros,
             "hand_prior": zeros,
+            "occlusion_prior": zeros,
             "part_foreground_prior": zeros,
             "stats": {
                 "head_prior_mean": 0.0,
                 "hand_prior_mean": 0.0,
+                "occlusion_prior_mean": 0.0,
                 "semantic_boundary_mean": 0.0,
             },
         }
@@ -160,6 +162,7 @@ def run_parsing_adapter(
     semantic_boundary_prior = []
     head_priors = []
     hand_priors = []
+    occlusion_priors = []
     part_foreground_priors = []
 
     for index in range(frame_count):
@@ -205,25 +208,38 @@ def run_parsing_adapter(
         semantic = np.clip(semantic * dilated, 0.0, 1.0)
         semantic = np.maximum(semantic * boundary_ring, 0.6 * part_foreground_prior * (1.0 - mask))
         semantic_boundary = np.clip(semantic + 0.35 * part_foreground_prior * boundary_ring, 0.0, 1.0).astype(np.float32)
+        part_overlap = np.clip(np.maximum(head_prior, hand_prior) * (boundary_ring + 0.5 * semantic_boundary), 0.0, 1.0)
+        occlusion_prior = np.clip(
+            np.maximum(
+                part_overlap * np.clip(dilated.astype(np.float32), 0.0, 1.0),
+                0.8 * part_foreground_prior * np.clip(1.0 - mask + boundary_ring, 0.0, 1.0),
+            ),
+            0.0,
+            1.0,
+        ).astype(np.float32)
 
         semantic_boundary_prior.append(semantic_boundary)
         head_priors.append(head_prior)
         hand_priors.append(hand_prior)
+        occlusion_priors.append(occlusion_prior)
         part_foreground_priors.append(part_foreground_prior)
 
     semantic_boundary_prior = np.stack(semantic_boundary_prior).astype(np.float32)
     head_priors = np.stack(head_priors).astype(np.float32)
     hand_priors = np.stack(hand_priors).astype(np.float32)
+    occlusion_priors = np.stack(occlusion_priors).astype(np.float32)
     part_foreground_priors = np.stack(part_foreground_priors).astype(np.float32)
     return {
         "mode": mode,
         "semantic_boundary_prior": semantic_boundary_prior,
         "head_prior": head_priors,
         "hand_prior": hand_priors,
+        "occlusion_prior": occlusion_priors,
         "part_foreground_prior": part_foreground_priors,
         "stats": {
             "head_prior_mean": float(head_priors.mean()),
             "hand_prior_mean": float(hand_priors.mean()),
+            "occlusion_prior_mean": float(occlusion_priors.mean()),
             "semantic_boundary_mean": float(semantic_boundary_prior.mean()),
         },
     }
@@ -234,13 +250,14 @@ def make_parsing_overlay(frames: np.ndarray, parsing_output: dict) -> np.ndarray
     semantic = np.asarray(parsing_output.get("semantic_boundary_prior"), dtype=np.float32)
     head = np.asarray(parsing_output.get("head_prior"), dtype=np.float32)
     hand = np.asarray(parsing_output.get("hand_prior"), dtype=np.float32)
+    occlusion = np.asarray(parsing_output.get("occlusion_prior"), dtype=np.float32)
     if semantic.shape != frames.shape[:3]:
         raise ValueError(f"parsing_output semantic boundary must match frames. Got {semantic.shape} vs {frames.shape[:3]}.")
     overlays = []
-    for frame, semantic_frame, head_frame, hand_frame in zip(frames, semantic, head, hand):
+    for frame, semantic_frame, head_frame, hand_frame, occlusion_frame in zip(frames, semantic, head, hand, occlusion):
         overlay = frame.astype(np.float32).copy()
-        overlay[..., 0] = np.clip(overlay[..., 0] + semantic_frame * 120.0, 0.0, 255.0)
-        overlay[..., 1] = np.clip(overlay[..., 1] + head_frame * 110.0, 0.0, 255.0)
+        overlay[..., 0] = np.clip(overlay[..., 0] + semantic_frame * 120.0 + occlusion_frame * 55.0, 0.0, 255.0)
+        overlay[..., 1] = np.clip(overlay[..., 1] + head_frame * 110.0 + occlusion_frame * 90.0, 0.0, 255.0)
         overlay[..., 2] = np.clip(overlay[..., 2] + hand_frame * 110.0, 0.0, 255.0)
         overlays.append(overlay.astype(np.uint8))
     return np.stack(overlays).astype(np.uint8)

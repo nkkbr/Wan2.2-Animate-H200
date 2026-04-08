@@ -16,6 +16,8 @@ BACKGROUND_KEEP_PRIOR_SEMANTICS = "background_keep_prior"
 SOFT_ALPHA_SEMANTICS = "soft_alpha"
 SOFT_BAND_SEMANTICS = "boundary_transition_band"
 BOUNDARY_BAND_SEMANTICS = SOFT_BAND_SEMANTICS
+OCCLUSION_BAND_SEMANTICS = "occlusion_band"
+UNCERTAINTY_MAP_SEMANTICS = "uncertainty_map"
 DEFAULT_REFERT_NUM = 5
 
 
@@ -331,6 +333,16 @@ def validate_preprocess_metadata(metadata: dict, src_root_path: str | Path) -> N
                 src_files["background_keep_prior"].get("mask_semantics") == BACKGROUND_KEEP_PRIOR_SEMANTICS,
                 "background_keep_prior artifact semantics mismatch.",
             )
+        if "occlusion_band" in src_files:
+            _require(
+                src_files["occlusion_band"].get("mask_semantics") == OCCLUSION_BAND_SEMANTICS,
+                "occlusion_band artifact semantics mismatch.",
+            )
+        if "uncertainty_map" in src_files:
+            _require(
+                src_files["uncertainty_map"].get("mask_semantics") == UNCERTAINTY_MAP_SEMANTICS,
+                "uncertainty_map artifact semantics mismatch.",
+            )
 
     root = Path(src_root_path)
     for name, artifact in src_files.items():
@@ -386,6 +398,8 @@ def resolve_preprocess_artifacts(
             "soft_alpha",
             "boundary_band",
             "background_keep_prior",
+            "occlusion_band",
+            "uncertainty_map",
         }
     }
     return artifacts, metadata
@@ -404,6 +418,8 @@ def validate_loaded_preprocess_bundle(
     soft_alpha_images: np.ndarray | None = None,
     boundary_band_images: np.ndarray | None = None,
     background_keep_prior_images: np.ndarray | None = None,
+    occlusion_band_images: np.ndarray | None = None,
+    uncertainty_map_images: np.ndarray | None = None,
 ) -> None:
     validate_rgb_video("conditioning frames", cond_images)
     validate_rgb_video("face frames", face_images)
@@ -457,6 +473,18 @@ def validate_loaded_preprocess_bundle(
                  f"Background keep prior frame count {background_keep_prior_images.shape[0]} does not match pose frame count {frame_count}.")
         _require(background_keep_prior_images.shape[1:3] == (cond_height, cond_width),
                  "Background keep prior size must match pose video size.")
+    if occlusion_band_images is not None:
+        validate_person_mask_frames("occlusion band frames", occlusion_band_images)
+        _require(occlusion_band_images.shape[0] == frame_count,
+                 f"Occlusion band frame count {occlusion_band_images.shape[0]} does not match pose frame count {frame_count}.")
+        _require(occlusion_band_images.shape[1:3] == (cond_height, cond_width),
+                 "Occlusion band size must match pose video size.")
+    if uncertainty_map_images is not None:
+        validate_person_mask_frames("uncertainty map frames", uncertainty_map_images)
+        _require(uncertainty_map_images.shape[0] == frame_count,
+                 f"Uncertainty map frame count {uncertainty_map_images.shape[0]} does not match pose frame count {frame_count}.")
+        _require(uncertainty_map_images.shape[1:3] == (cond_height, cond_width),
+                 "Uncertainty map size must match pose video size.")
 
     if metadata is None:
         return
@@ -574,4 +602,30 @@ def validate_loaded_preprocess_bundle(
         _require(
             background_keep_meta.get("mask_semantics") == BACKGROUND_KEEP_PRIOR_SEMANTICS,
             "background_keep_prior artifact semantics mismatch.",
+        )
+    if occlusion_band_images is not None:
+        _require("occlusion_band" in metadata["src_files"], "occlusion_band frames were loaded but metadata has no occlusion_band artifact.")
+        occlusion_meta = metadata["src_files"]["occlusion_band"]
+        _require(occlusion_meta["frame_count"] == occlusion_band_images.shape[0], "occlusion_band artifact frame_count mismatch.")
+        _require(
+            occlusion_meta["height"] == occlusion_band_images.shape[1]
+            and occlusion_meta["width"] == occlusion_band_images.shape[2],
+            "occlusion_band artifact size mismatch.",
+        )
+        _require(
+            occlusion_meta.get("mask_semantics") == OCCLUSION_BAND_SEMANTICS,
+            "occlusion_band artifact semantics mismatch.",
+        )
+    if uncertainty_map_images is not None:
+        _require("uncertainty_map" in metadata["src_files"], "uncertainty_map frames were loaded but metadata has no uncertainty_map artifact.")
+        uncertainty_meta = metadata["src_files"]["uncertainty_map"]
+        _require(uncertainty_meta["frame_count"] == uncertainty_map_images.shape[0], "uncertainty_map artifact frame_count mismatch.")
+        _require(
+            uncertainty_meta["height"] == uncertainty_map_images.shape[1]
+            and uncertainty_meta["width"] == uncertainty_map_images.shape[2],
+            "uncertainty_map artifact size mismatch.",
+        )
+        _require(
+            uncertainty_meta.get("mask_semantics") == UNCERTAINTY_MAP_SEMANTICS,
+            "uncertainty_map artifact semantics mismatch.",
         )

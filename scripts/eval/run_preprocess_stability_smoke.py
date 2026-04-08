@@ -16,6 +16,18 @@ DEFAULT_VIDEO_PATH = "/home/user1/wan2.2/test1/260306_01_step_1_0000_0010.mp4"
 DEFAULT_REFERENCE_PATH = "/home/user1/wan2.2/test1/Gemini_Generated_Image_2.png"
 DEFAULT_CKPT_PATH = "/home/user1/wan2.2/Wan2.2/Wan2.2-Animate-14B/process_checkpoint"
 
+
+def _default_python_bin() -> str:
+    override = os.environ.get("WAN_PYTHON")
+    candidates = [override, "/home/user1/miniconda3/envs/wan/bin/python", sys.executable]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return str(Path(candidate).resolve())
+    return sys.executable
+
+
+PYTHON = _default_python_bin()
+
 PRESETS = {
     "failed_high_legacy": {
         "resolution_area": (1280, 720),
@@ -190,7 +202,7 @@ def _verify_outputs(run_dir: Path):
 
 def _run_contract_check(preprocess_dir: Path):
     command = [
-        sys.executable,
+        PYTHON,
         "-X",
         "faulthandler",
         str(CONTRACT_SCRIPT),
@@ -215,7 +227,7 @@ def _run_contract_check(preprocess_dir: Path):
 
 def _build_command(run_dir: Path, preset_name: str, preset: dict, args):
     command = [
-        sys.executable,
+        PYTHON,
         "-X",
         "faulthandler",
         str(PREPROCESS_SCRIPT),

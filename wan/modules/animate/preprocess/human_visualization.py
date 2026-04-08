@@ -3,12 +3,22 @@ import os
 import cv2
 import time
 import math
-import matplotlib
-import matplotlib.pyplot as plt
+import colorsys
+try:
+    import matplotlib
+    import matplotlib.pyplot as plt
+except ImportError:  # pragma: no cover - optional dependency
+    matplotlib = None
+    plt = None
 import numpy as np
 from typing import Dict, List
 import random
 from pose2d_utils import AAPoseMeta
+
+
+def _hsv_to_rgb255(h, s=1.0, v=1.0):
+    rgb = colorsys.hsv_to_rgb(float(h), float(s), float(v))
+    return tuple(int(round(channel * 255.0)) for channel in rgb)
 
 
 def draw_handpose(canvas, keypoints, hand_score_th=0.6):
@@ -71,7 +81,7 @@ def draw_handpose(canvas, keypoints, hand_score_th=0.6):
                 canvas,
                 (x1, y1),
                 (x2, y2),
-                matplotlib.colors.hsv_to_rgb([ie / float(len(edges)), 1.0, 1.0]) * 255,
+                _hsv_to_rgb255(ie / float(len(edges)), 1.0, 1.0),
                 thickness=stickwidth,
             )
 
@@ -153,7 +163,7 @@ def draw_handpose_new(canvas, keypoints, stickwidth_type='v2', hand_score_th=0.6
                 canvas,
                 (x1, y1),
                 (x2, y2),
-                matplotlib.colors.hsv_to_rgb([ie / float(len(edges)), 1.0, 1.0]) * 255,
+                _hsv_to_rgb255(ie / float(len(edges)), 1.0, 1.0),
                 thickness=stickwidth,
             )
 
@@ -1030,6 +1040,8 @@ def draw_mask(img, mask, background=0, return_rgba=False):
 
 
 def draw_pcd(pcd_list, save_path=None):
+    if plt is None:
+        raise ImportError("draw_pcd requires matplotlib, but matplotlib is not installed.")
     fig = plt.figure()
     ax = fig.add_subplot(111, projection="3d")
 

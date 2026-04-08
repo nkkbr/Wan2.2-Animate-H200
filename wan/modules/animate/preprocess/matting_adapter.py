@@ -43,10 +43,12 @@ def run_matting_adapter(
             "mode": "none",
             "soft_alpha": hard_mask.astype(np.float32),
             "unknown_region": zeros,
+            "uncertainty_prior": zeros,
             "support_region": (hard_mask > 0.0).astype(np.float32),
             "stats": {
                 "soft_alpha_mean": float(hard_mask.mean()),
                 "unknown_region_mean": 0.0,
+                "uncertainty_prior_mean": 0.0,
             },
         }
     if mode != "heuristic":
@@ -71,6 +73,7 @@ def run_matting_adapter(
 
     soft_alpha_frames = []
     unknown_region_frames = []
+    uncertainty_prior_frames = []
     support_region_frames = []
     spatial_weight = float(np.clip(spatial_weight, 0.0, 1.0))
     color_weight = float(np.clip(color_weight, 0.0, 1.0))
@@ -93,6 +96,7 @@ def run_matting_adapter(
         fg_color = _mean_color(frame, sure_fg, fallback=np.array([192.0, 160.0, 144.0], dtype=np.float32))
         bg_color = _mean_color(frame, sure_bg, fallback=frame.reshape(-1, 3).mean(axis=0))
         color_alpha = _distance_alpha(frame, fg_color, bg_color)
+        alpha_disagreement = np.abs(spatial_alpha - color_alpha).astype(np.float32)
 
         alpha = np.where(
             sure_fg > 0,
@@ -113,19 +117,30 @@ def run_matting_adapter(
 
         soft_alpha_frames.append(alpha)
         unknown_region_frames.append(unknown.astype(np.float32))
+        uncertainty_prior = np.clip(
+            0.55 * unknown.astype(np.float32)
+            + 0.30 * alpha_disagreement * np.clip(support, 0.0, 1.0)
+            + 0.25 * np.clip(band + parsing_prior, 0.0, 1.0),
+            0.0,
+            1.0,
+        ).astype(np.float32)
+        uncertainty_prior_frames.append(uncertainty_prior)
         support_region_frames.append(np.clip(support, 0.0, 1.0).astype(np.float32))
 
     soft_alpha_frames = np.stack(soft_alpha_frames).astype(np.float32)
     unknown_region_frames = np.stack(unknown_region_frames).astype(np.float32)
+    uncertainty_prior_frames = np.stack(uncertainty_prior_frames).astype(np.float32)
     support_region_frames = np.stack(support_region_frames).astype(np.float32)
     return {
         "mode": mode,
         "soft_alpha": soft_alpha_frames,
         "unknown_region": unknown_region_frames,
+        "uncertainty_prior": uncertainty_prior_frames,
         "support_region": support_region_frames,
         "stats": {
             "soft_alpha_mean": float(soft_alpha_frames.mean()),
             "unknown_region_mean": float(unknown_region_frames.mean()),
+            "uncertainty_prior_mean": float(uncertainty_prior_frames.mean()),
             "support_region_mean": float(support_region_frames.mean()),
         },
     }

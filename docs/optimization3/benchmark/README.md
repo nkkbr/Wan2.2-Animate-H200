@@ -30,6 +30,8 @@
   - Step 01 的正式执行结论与 baseline 指标
 - `02-h200-multistage-multires-preprocess-findings.md`
   - Step 02 的正式执行结论、多轮 benchmark 结果与冻结判断
+- `03-boundary-fusion-alpha-uncertainty-system-findings.md`
+  - Step 03 的正式执行结论、多轮对照与 uncertainty 冻结判断
 
 
 ## 3. Benchmark 分层
@@ -49,7 +51,8 @@
 - 默认采用“可持续运行”的基线配置：
   - 保留 `structure_match`
   - 保留 `soft_band`
-  - 保留 `heuristic parsing/matting/boundary fusion`
+  - 保留 `heuristic parsing/matting`
+  - `boundary_fusion` 默认采用 `v2`
   - 默认使用 `clean_plate_image`
   - 默认关闭重型 QA 视频写盘，只保留结构化 JSON 指标产物
 

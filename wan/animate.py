@@ -36,8 +36,10 @@ from .utils.animate_contract import (
     BACKGROUND_KEEP_PRIOR_SEMANTICS,
     BOUNDARY_BAND_SEMANTICS,
     HARD_FOREGROUND_SEMANTICS,
+    OCCLUSION_BAND_SEMANTICS,
     PERSON_MASK_SEMANTICS,
     SOFT_ALPHA_SEMANTICS,
+    UNCERTAINTY_MAP_SEMANTICS,
     load_image_rgb,
     read_video_rgb,
     resolve_preprocess_artifacts,
@@ -462,6 +464,8 @@ class WanAnimate:
         soft_alpha_images,
         boundary_band_images,
         background_keep_prior_images,
+        occlusion_band_images,
+        uncertainty_map_images,
         lat_h,
         lat_w,
         mask_mode,
@@ -488,6 +492,14 @@ class WanAnimate:
         background_keep_prior = (
             torch.as_tensor(np.asarray(background_keep_prior_images), dtype=torch.float32)
             if background_keep_prior_images is not None else None
+        )
+        occlusion_band = (
+            torch.as_tensor(np.asarray(occlusion_band_images), dtype=torch.float32)
+            if occlusion_band_images is not None else None
+        )
+        uncertainty_map = (
+            torch.as_tensor(np.asarray(uncertainty_map_images), dtype=torch.float32)
+            if uncertainty_map_images is not None else None
         )
         background_keep = compose_background_keep_mask(
             hard_foreground,
@@ -533,6 +545,8 @@ class WanAnimate:
             "boundary_band": boundary_band,
             "soft_alpha": soft_alpha,
             "background_keep_prior": background_keep_prior,
+            "occlusion_band": occlusion_band,
+            "uncertainty_map": uncertainty_map,
             "background_keep": background_keep,
             "background_keep_latent": background_keep_latent,
             "soft_band_latent": soft_band_latent,
@@ -571,6 +585,10 @@ class WanAnimate:
             mask_artifacts["soft_alpha"] = replacement_masks["soft_alpha"][:real_frame_len].cpu().numpy()
         if replacement_masks["background_keep_prior"] is not None:
             mask_artifacts["background_keep_prior"] = replacement_masks["background_keep_prior"][:real_frame_len].cpu().numpy()
+        if replacement_masks["occlusion_band"] is not None:
+            mask_artifacts["occlusion_band"] = replacement_masks["occlusion_band"][:real_frame_len].cpu().numpy()
+        if replacement_masks["uncertainty_map"] is not None:
+            mask_artifacts["uncertainty_map"] = replacement_masks["uncertainty_map"][:real_frame_len].cpu().numpy()
         if replacement_masks["soft_band_latent"] is not None:
             mask_artifacts["latent_soft_band"] = replacement_masks["soft_band_latent"][:real_frame_len].cpu().numpy()
         if replacement_masks["soft_alpha_latent"] is not None:
@@ -908,6 +926,8 @@ class WanAnimate:
         soft_alpha_images = None
         boundary_band_images = None
         background_keep_prior_images = None
+        occlusion_band_images = None
+        uncertainty_map_images = None
         bg_images = None
         if replace_flag:
             bg_images, person_mask_images = self.prepare_source_for_replace(
@@ -927,6 +947,16 @@ class WanAnimate:
                     artifacts["background_keep_prior"]["path"],
                     artifacts["background_keep_prior"].get("format"),
                 )
+            if "occlusion_band" in artifacts:
+                occlusion_band_images = load_mask_artifact(
+                    artifacts["occlusion_band"]["path"],
+                    artifacts["occlusion_band"].get("format"),
+                )
+            if "uncertainty_map" in artifacts:
+                uncertainty_map_images = load_mask_artifact(
+                    artifacts["uncertainty_map"]["path"],
+                    artifacts["uncertainty_map"].get("format"),
+                )
             validate_loaded_preprocess_bundle(
                 cond_images=np.asarray(cond_images[:real_frame_len]),
                 face_images=np.asarray(face_images[:real_frame_len]),
@@ -939,6 +969,8 @@ class WanAnimate:
                 soft_alpha_images=soft_alpha_images,
                 boundary_band_images=boundary_band_images,
                 background_keep_prior_images=background_keep_prior_images,
+                occlusion_band_images=occlusion_band_images,
+                uncertainty_map_images=uncertainty_map_images,
             )
             bg_images = self.inputs_padding(bg_images, target_len)
             person_mask_images = self.inputs_padding(person_mask_images, target_len)
@@ -952,6 +984,10 @@ class WanAnimate:
                 soft_alpha_images = self.inputs_padding(soft_alpha_images, target_len)
             if background_keep_prior_images is not None:
                 background_keep_prior_images = self.inputs_padding(background_keep_prior_images, target_len)
+            if occlusion_band_images is not None:
+                occlusion_band_images = self.inputs_padding(occlusion_band_images, target_len)
+            if uncertainty_map_images is not None:
+                uncertainty_map_images = self.inputs_padding(uncertainty_map_images, target_len)
         else:
             validate_loaded_preprocess_bundle(
                 cond_images=np.asarray(cond_images[:real_frame_len]),
@@ -986,6 +1022,8 @@ class WanAnimate:
                 background_keep_prior_images=(
                     np.asarray(background_keep_prior_images) if background_keep_prior_images is not None else None
                 ),
+                occlusion_band_images=np.asarray(occlusion_band_images) if occlusion_band_images is not None else None,
+                uncertainty_map_images=np.asarray(uncertainty_map_images) if uncertainty_map_images is not None else None,
                 lat_h=lat_h,
                 lat_w=lat_w,
                 mask_mode=replacement_mask_mode,
@@ -1054,6 +1092,8 @@ class WanAnimate:
             "soft_alpha_available": bool(soft_alpha_images is not None) if replace_flag else False,
             "boundary_band_available": bool(boundary_band_images is not None) if replace_flag else False,
             "background_keep_prior_available": bool(background_keep_prior_images is not None) if replace_flag else False,
+            "occlusion_band_available": bool(occlusion_band_images is not None) if replace_flag else False,
+            "uncertainty_map_available": bool(uncertainty_map_images is not None) if replace_flag else False,
             "text_condition_encode_sec": text_condition_encode_sec,
             "reference_condition_encode_sec": reference_condition_encode_sec,
             "static_condition_encode_sec": static_condition_encode_sec,

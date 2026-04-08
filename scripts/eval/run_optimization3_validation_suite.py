@@ -12,7 +12,18 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNS_ROOT = REPO_ROOT / "runs"
-PYTHON = sys.executable
+
+
+def _default_python_bin() -> str:
+    override = os.environ.get("WAN_PYTHON")
+    candidates = [override, "/home/user1/miniconda3/envs/wan/bin/python", sys.executable]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return str(Path(candidate).resolve())
+    return sys.executable
+
+
+PYTHON = _default_python_bin()
 
 DEFAULT_MANIFEST = REPO_ROOT / "docs" / "optimization3" / "benchmark" / "benchmark_manifest.example.json"
 DEFAULT_GATE_POLICY = REPO_ROOT / "docs" / "optimization3" / "benchmark" / "gate_policy.step01.json"
@@ -178,7 +189,7 @@ def _build_preprocess_command(
         "--sam_prompt_hand_min_points",
         "100",
         "--boundary_fusion_mode",
-        "heuristic",
+        "v2",
         "--parsing_mode",
         "heuristic",
         "--matting_mode",

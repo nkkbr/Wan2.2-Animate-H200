@@ -3,12 +3,69 @@ import os
 import time
 import numpy as np
 import torch
-from diffusers import FluxKontextPipeline
 import cv2
 from loguru import logger
 from PIL import Image
 
-from decord import VideoReader
+try:
+    from diffusers import FluxKontextPipeline
+except ImportError:  # pragma: no cover - optional dependency
+    FluxKontextPipeline = None
+
+try:
+    from decord import VideoReader
+except ImportError:  # pragma: no cover - optional dependency
+    class _CV2Batch:
+        def __init__(self, frames):
+            self._frames = np.asarray(frames, dtype=np.uint8)
+
+        def asnumpy(self):
+            return self._frames
+
+    class VideoReader:  # type: ignore[override]
+        def __init__(self, video_path):
+            self.video_path = str(video_path)
+            capture = cv2.VideoCapture(self.video_path)
+            if not capture.isOpened():
+                raise FileNotFoundError(f"Failed to open video via cv2 fallback: {self.video_path}")
+            self._frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            self._fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
+            capture.release()
+            if self._frame_count <= 0:
+                raise ValueError(f"cv2 fallback failed to resolve a valid frame count for {self.video_path}")
+            if self._fps <= 1e-6:
+                self._fps = 30.0
+
+        def __len__(self):
+            return self._frame_count
+
+        def get_avg_fps(self):
+            return self._fps
+
+        def get_frame_timestamp(self, index):
+            if index < 0:
+                index = self._frame_count + index
+            index = int(np.clip(index, 0, self._frame_count - 1))
+            timestamp = index / float(self._fps)
+            return np.array([timestamp, timestamp], dtype=np.float32)
+
+        def get_batch(self, indices):
+            capture = cv2.VideoCapture(self.video_path)
+            if not capture.isOpened():
+                raise FileNotFoundError(f"Failed to reopen video via cv2 fallback: {self.video_path}")
+            frames = []
+            try:
+                for index in indices:
+                    capture.set(cv2.CAP_PROP_POS_FRAMES, int(index))
+                    ok, frame_bgr = capture.read()
+                    if not ok or frame_bgr is None:
+                        raise RuntimeError(
+                            f"cv2 fallback failed to read frame {index} from {self.video_path}"
+                        )
+                    frames.append(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
+            finally:
+                capture.release()
+            return _CV2Batch(frames)
 from pose2d import Pose2d
 from pose2d_utils import AAPoseMeta
 from utils import resize_by_area, get_frame_indices, padding_resize, get_aug_mask, get_mask_body_img
@@ -41,14 +98,21 @@ from wan.utils.animate_contract import (
     BACKGROUND_KEEP_PRIOR_SEMANTICS,
     BOUNDARY_BAND_SEMANTICS,
     HARD_FOREGROUND_SEMANTICS,
+    OCCLUSION_BAND_SEMANTICS,
     SOFT_ALPHA_SEMANTICS,
     SOFT_BAND_SEMANTICS,
+    UNCERTAINTY_MAP_SEMANTICS,
     load_image_rgb,
     validate_rgb_video,
 )
 from wan.utils.media_io import write_person_mask_artifact, write_rgb_artifact
 from wan.utils.replacement_masks import build_soft_boundary_band
-from boundary_fusion import fuse_boundary_signals, make_fused_boundary_preview
+from boundary_fusion import (
+    fuse_boundary_signals,
+    make_alpha_hard_compare_preview,
+    make_fused_boundary_preview,
+    make_uncertainty_heatmap_preview,
+)
 from background_clean_plate import build_clean_plate_background
 from matting_adapter import make_matting_alpha_preview, run_matting_adapter
 from multistage_preprocess import (
@@ -109,6 +173,10 @@ class ProcessPipeline():
                 apply_postprocessing=self.sam_apply_postprocessing,
             )
         if flux_kontext_path is not None:
+            if FluxKontextPipeline is None:
+                raise ImportError(
+                    "FluxKontextPipeline requires diffusers to be installed, but diffusers is not available in the current environment."
+                )
             self.flux_kontext = FluxKontextPipeline.from_pretrained(flux_kontext_path, torch_dtype=torch.bfloat16).to("cuda")
 
     def _artifact_format(self, save_format, lossless_intermediate, stem, is_mask=False):
@@ -166,7 +234,7 @@ class ProcessPipeline():
         soft_mask_mode="soft_band",
         soft_mask_band_width=24,
         soft_mask_blur_kernel=5,
-        boundary_fusion_mode="heuristic",
+        boundary_fusion_mode="v2",
         parsing_mode="heuristic",
         matting_mode="heuristic",
         parsing_head_expand=1.2,
@@ -823,6 +891,8 @@ class ProcessPipeline():
             hard_foreground_masks = boundary_fusion["hard_foreground"].astype(np.float32)
             soft_alpha_masks = boundary_fusion["soft_alpha"].astype(np.float32)
             boundary_band_masks = boundary_fusion["boundary_band"].astype(np.float32)
+            occlusion_band_masks = boundary_fusion["occlusion_band"].astype(np.float32)
+            uncertainty_map_masks = boundary_fusion["uncertainty_map"].astype(np.float32)
             background_keep_prior_masks = boundary_fusion["background_keep_prior"].astype(np.float32)
             background_start = time.perf_counter()
             bg_images, background_debug = build_clean_plate_background(
@@ -958,6 +1028,36 @@ class ProcessPipeline():
                     fps=fps,
                     mask_semantics=BACKGROUND_KEEP_PRIOR_SEMANTICS,
                 )
+                qa_occlusion_band = write_person_mask_artifact(
+                    mask_frames=occlusion_band_masks,
+                    output_root=output_path,
+                    stem="occlusion_band_overlay",
+                    artifact_format="mp4",
+                    fps=fps,
+                    mask_semantics=OCCLUSION_BAND_SEMANTICS,
+                )
+                qa_uncertainty_map = write_person_mask_artifact(
+                    mask_frames=uncertainty_map_masks,
+                    output_root=output_path,
+                    stem="uncertainty_map_overlay",
+                    artifact_format="mp4",
+                    fps=fps,
+                    mask_semantics=UNCERTAINTY_MAP_SEMANTICS,
+                )
+                qa_uncertainty_heatmap = write_rgb_artifact(
+                    frames=make_uncertainty_heatmap_preview(uncertainty_map_masks),
+                    output_root=output_path,
+                    stem="uncertainty_heatmap_preview",
+                    artifact_format="mp4",
+                    fps=fps,
+                )
+                qa_alpha_hard_compare = write_rgb_artifact(
+                    frames=make_alpha_hard_compare_preview(hard_foreground_masks, soft_alpha_masks),
+                    output_root=output_path,
+                    stem="alpha_hard_compare_preview",
+                    artifact_format="mp4",
+                    fps=fps,
+                )
                 qa_outputs.update({
                     "parsing_overlay": qa_parsing_overlay["path"],
                     "matting_alpha_preview": qa_matting_alpha["path"],
@@ -966,6 +1066,10 @@ class ProcessPipeline():
                     "soft_alpha_overlay": qa_soft_alpha["path"],
                     "boundary_band_overlay": qa_boundary_band["path"],
                     "background_keep_prior_overlay": qa_background_prior["path"],
+                    "occlusion_band_overlay": qa_occlusion_band["path"],
+                    "uncertainty_map_overlay": qa_uncertainty_map["path"],
+                    "uncertainty_heatmap_preview": qa_uncertainty_heatmap["path"],
+                    "alpha_hard_compare_preview": qa_alpha_hard_compare["path"],
                 })
                 qa_background_hole = write_rgb_artifact(
                     frames=background_debug["hole_background"].astype(np.uint8),
@@ -1153,6 +1257,49 @@ class ProcessPipeline():
                 fps=fps,
                 mask_semantics=BOUNDARY_BAND_SEMANTICS,
             )
+            src_files["boundary_band"].update({
+                "source_models": ["sam2", parsing_output["mode"], matting_output["mode"]],
+                "fusion_version": boundary_fusion_mode,
+                "confidence_summary": {
+                    "mean": float(boundary_band_masks.mean()),
+                    "p80": float(np.quantile(boundary_band_masks, 0.8)),
+                    "p95": float(np.quantile(boundary_band_masks, 0.95)),
+                },
+            })
+            src_files["occlusion_band"] = write_person_mask_artifact(
+                mask_frames=occlusion_band_masks,
+                output_root=output_path,
+                stem="src_occlusion_band",
+                artifact_format=self._artifact_format(save_format, lossless_intermediate, "occlusion_band", is_mask=True),
+                fps=fps,
+                mask_semantics=OCCLUSION_BAND_SEMANTICS,
+            )
+            src_files["occlusion_band"].update({
+                "source_models": ["sam2", parsing_output["mode"], matting_output["mode"]],
+                "fusion_version": boundary_fusion_mode,
+                "confidence_summary": {
+                    "mean": float(occlusion_band_masks.mean()),
+                    "p80": float(np.quantile(occlusion_band_masks, 0.8)),
+                    "p95": float(np.quantile(occlusion_band_masks, 0.95)),
+                },
+            })
+            src_files["uncertainty_map"] = write_person_mask_artifact(
+                mask_frames=uncertainty_map_masks,
+                output_root=output_path,
+                stem="src_uncertainty_map",
+                artifact_format=self._artifact_format(save_format, lossless_intermediate, "uncertainty_map", is_mask=True),
+                fps=fps,
+                mask_semantics=UNCERTAINTY_MAP_SEMANTICS,
+            )
+            src_files["uncertainty_map"].update({
+                "source_models": ["sam2", parsing_output["mode"], matting_output["mode"]],
+                "fusion_version": boundary_fusion_mode,
+                "confidence_summary": {
+                    "mean": float(uncertainty_map_masks.mean()),
+                    "p80": float(np.quantile(uncertainty_map_masks, 0.8)),
+                    "p95": float(np.quantile(uncertainty_map_masks, 0.95)),
+                },
+            })
             src_files["soft_alpha"] = write_person_mask_artifact(
                 mask_frames=soft_alpha_masks,
                 output_root=output_path,
@@ -1161,6 +1308,15 @@ class ProcessPipeline():
                 fps=fps,
                 mask_semantics=SOFT_ALPHA_SEMANTICS,
             )
+            src_files["soft_alpha"].update({
+                "source_models": ["sam2", parsing_output["mode"], matting_output["mode"]],
+                "fusion_version": boundary_fusion_mode,
+                "confidence_summary": {
+                    "mean": float(soft_alpha_masks.mean()),
+                    "p80": float(np.quantile(soft_alpha_masks, 0.8)),
+                    "p95": float(np.quantile(soft_alpha_masks, 0.95)),
+                },
+            })
             src_files["background_keep_prior"] = write_person_mask_artifact(
                 mask_frames=background_keep_prior_masks,
                 output_root=output_path,
@@ -1209,6 +1365,8 @@ class ProcessPipeline():
                     "mode": boundary_fusion_mode,
                     "parsing_mode": parsing_output["mode"],
                     "matting_mode": matting_output["mode"],
+                    "artifact_schema_version": 2,
+                    "artifact_sources": ["sam2", parsing_output["mode"], matting_output["mode"]],
                     "parsing_stats": parsing_output["stats"],
                     "matting_stats": matting_output["stats"],
                     "fusion_stats": boundary_fusion["stats"],
