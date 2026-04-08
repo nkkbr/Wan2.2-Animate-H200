@@ -464,6 +464,10 @@ class WanAnimate:
         soft_alpha_images,
         boundary_band_images,
         background_keep_prior_images,
+        visible_support_images,
+        unresolved_region_images,
+        background_confidence_images,
+        background_source_provenance_images,
         occlusion_band_images,
         uncertainty_map_images,
         lat_h,
@@ -493,6 +497,22 @@ class WanAnimate:
             torch.as_tensor(np.asarray(background_keep_prior_images), dtype=torch.float32)
             if background_keep_prior_images is not None else None
         )
+        visible_support = (
+            torch.as_tensor(np.asarray(visible_support_images), dtype=torch.float32)
+            if visible_support_images is not None else None
+        )
+        unresolved_region = (
+            torch.as_tensor(np.asarray(unresolved_region_images), dtype=torch.float32)
+            if unresolved_region_images is not None else None
+        )
+        background_confidence = (
+            torch.as_tensor(np.asarray(background_confidence_images), dtype=torch.float32)
+            if background_confidence_images is not None else None
+        )
+        background_source_provenance = (
+            torch.as_tensor(np.asarray(background_source_provenance_images), dtype=torch.float32)
+            if background_source_provenance_images is not None else None
+        )
         occlusion_band = (
             torch.as_tensor(np.asarray(occlusion_band_images), dtype=torch.float32)
             if occlusion_band_images is not None else None
@@ -506,6 +526,9 @@ class WanAnimate:
             soft_band=boundary_band,
             soft_alpha=soft_alpha,
             background_keep_prior=background_keep_prior,
+            visible_support=visible_support,
+            unresolved_region=unresolved_region,
+            background_confidence=background_confidence,
             mode=mask_mode,
             boundary_strength=boundary_strength,
         )
@@ -545,6 +568,10 @@ class WanAnimate:
             "boundary_band": boundary_band,
             "soft_alpha": soft_alpha,
             "background_keep_prior": background_keep_prior,
+            "visible_support": visible_support,
+            "unresolved_region": unresolved_region,
+            "background_confidence": background_confidence,
+            "background_source_provenance": background_source_provenance,
             "occlusion_band": occlusion_band,
             "uncertainty_map": uncertainty_map,
             "background_keep": background_keep,
@@ -585,6 +612,14 @@ class WanAnimate:
             mask_artifacts["soft_alpha"] = replacement_masks["soft_alpha"][:real_frame_len].cpu().numpy()
         if replacement_masks["background_keep_prior"] is not None:
             mask_artifacts["background_keep_prior"] = replacement_masks["background_keep_prior"][:real_frame_len].cpu().numpy()
+        if replacement_masks["visible_support"] is not None:
+            mask_artifacts["visible_support"] = replacement_masks["visible_support"][:real_frame_len].cpu().numpy()
+        if replacement_masks["unresolved_region"] is not None:
+            mask_artifacts["unresolved_region"] = replacement_masks["unresolved_region"][:real_frame_len].cpu().numpy()
+        if replacement_masks["background_confidence"] is not None:
+            mask_artifacts["background_confidence"] = replacement_masks["background_confidence"][:real_frame_len].cpu().numpy()
+        if replacement_masks["background_source_provenance"] is not None:
+            mask_artifacts["background_source_provenance"] = replacement_masks["background_source_provenance"][:real_frame_len].cpu().numpy()
         if replacement_masks["occlusion_band"] is not None:
             mask_artifacts["occlusion_band"] = replacement_masks["occlusion_band"][:real_frame_len].cpu().numpy()
         if replacement_masks["uncertainty_map"] is not None:
@@ -926,6 +961,10 @@ class WanAnimate:
         soft_alpha_images = None
         boundary_band_images = None
         background_keep_prior_images = None
+        visible_support_images = None
+        unresolved_region_images = None
+        background_confidence_images = None
+        background_source_provenance_images = None
         occlusion_band_images = None
         uncertainty_map_images = None
         bg_images = None
@@ -946,6 +985,26 @@ class WanAnimate:
                 background_keep_prior_images = load_mask_artifact(
                     artifacts["background_keep_prior"]["path"],
                     artifacts["background_keep_prior"].get("format"),
+                )
+            if "visible_support" in artifacts:
+                visible_support_images = load_mask_artifact(
+                    artifacts["visible_support"]["path"],
+                    artifacts["visible_support"].get("format"),
+                )
+            if "unresolved_region" in artifacts:
+                unresolved_region_images = load_mask_artifact(
+                    artifacts["unresolved_region"]["path"],
+                    artifacts["unresolved_region"].get("format"),
+                )
+            if "background_confidence" in artifacts:
+                background_confidence_images = load_mask_artifact(
+                    artifacts["background_confidence"]["path"],
+                    artifacts["background_confidence"].get("format"),
+                )
+            if "background_source_provenance" in artifacts:
+                background_source_provenance_images = load_mask_artifact(
+                    artifacts["background_source_provenance"]["path"],
+                    artifacts["background_source_provenance"].get("format"),
                 )
             if "occlusion_band" in artifacts:
                 occlusion_band_images = load_mask_artifact(
@@ -969,6 +1028,10 @@ class WanAnimate:
                 soft_alpha_images=soft_alpha_images,
                 boundary_band_images=boundary_band_images,
                 background_keep_prior_images=background_keep_prior_images,
+                visible_support_images=visible_support_images,
+                unresolved_region_images=unresolved_region_images,
+                background_confidence_images=background_confidence_images,
+                background_source_provenance_images=background_source_provenance_images,
                 occlusion_band_images=occlusion_band_images,
                 uncertainty_map_images=uncertainty_map_images,
             )
@@ -984,6 +1047,14 @@ class WanAnimate:
                 soft_alpha_images = self.inputs_padding(soft_alpha_images, target_len)
             if background_keep_prior_images is not None:
                 background_keep_prior_images = self.inputs_padding(background_keep_prior_images, target_len)
+            if visible_support_images is not None:
+                visible_support_images = self.inputs_padding(visible_support_images, target_len)
+            if unresolved_region_images is not None:
+                unresolved_region_images = self.inputs_padding(unresolved_region_images, target_len)
+            if background_confidence_images is not None:
+                background_confidence_images = self.inputs_padding(background_confidence_images, target_len)
+            if background_source_provenance_images is not None:
+                background_source_provenance_images = self.inputs_padding(background_source_provenance_images, target_len)
             if occlusion_band_images is not None:
                 occlusion_band_images = self.inputs_padding(occlusion_band_images, target_len)
             if uncertainty_map_images is not None:
@@ -1021,6 +1092,14 @@ class WanAnimate:
                 boundary_band_images=np.asarray(boundary_band_images) if boundary_band_images is not None else None,
                 background_keep_prior_images=(
                     np.asarray(background_keep_prior_images) if background_keep_prior_images is not None else None
+                ),
+                visible_support_images=np.asarray(visible_support_images) if visible_support_images is not None else None,
+                unresolved_region_images=np.asarray(unresolved_region_images) if unresolved_region_images is not None else None,
+                background_confidence_images=(
+                    np.asarray(background_confidence_images) if background_confidence_images is not None else None
+                ),
+                background_source_provenance_images=(
+                    np.asarray(background_source_provenance_images) if background_source_provenance_images is not None else None
                 ),
                 occlusion_band_images=np.asarray(occlusion_band_images) if occlusion_band_images is not None else None,
                 uncertainty_map_images=np.asarray(uncertainty_map_images) if uncertainty_map_images is not None else None,
@@ -1103,6 +1182,10 @@ class WanAnimate:
             "soft_alpha_available": bool(soft_alpha_images is not None) if replace_flag else False,
             "boundary_band_available": bool(boundary_band_images is not None) if replace_flag else False,
             "background_keep_prior_available": bool(background_keep_prior_images is not None) if replace_flag else False,
+            "visible_support_available": bool(visible_support_images is not None) if replace_flag else False,
+            "unresolved_region_available": bool(unresolved_region_images is not None) if replace_flag else False,
+            "background_confidence_available": bool(background_confidence_images is not None) if replace_flag else False,
+            "background_source_provenance_available": bool(background_source_provenance_images is not None) if replace_flag else False,
             "occlusion_band_available": bool(occlusion_band_images is not None) if replace_flag else False,
             "uncertainty_map_available": bool(uncertainty_map_images is not None) if replace_flag else False,
             "text_condition_encode_sec": text_condition_encode_sec,

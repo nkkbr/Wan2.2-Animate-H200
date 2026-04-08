@@ -13,6 +13,10 @@ PERSON_MASK_SEMANTICS = "person_foreground"
 HARD_FOREGROUND_SEMANTICS = "hard_foreground"
 BACKGROUND_KEEP_MASK_SEMANTICS = "1 - person_foreground"
 BACKGROUND_KEEP_PRIOR_SEMANTICS = "background_keep_prior"
+BACKGROUND_VISIBLE_SUPPORT_SEMANTICS = "background_visible_support"
+UNRESOLVED_REGION_SEMANTICS = "background_unresolved_region"
+BACKGROUND_CONFIDENCE_SEMANTICS = "background_confidence"
+BACKGROUND_SOURCE_PROVENANCE_SEMANTICS = "background_source_provenance"
 SOFT_ALPHA_SEMANTICS = "soft_alpha"
 SOFT_BAND_SEMANTICS = "boundary_transition_band"
 BOUNDARY_BAND_SEMANTICS = SOFT_BAND_SEMANTICS
@@ -309,7 +313,7 @@ def validate_preprocess_metadata(metadata: dict, src_root_path: str | Path) -> N
         background_mode = src_files["background"].get("background_mode")
         if background_mode is not None:
             _require(
-                background_mode in {"hole", "clean_plate_image", "clean_plate_video"},
+                background_mode in {"hole", "clean_plate_image", "clean_plate_video", "clean_plate_video_v1", "clean_plate_video_v2"},
                 f"Unsupported background_mode in metadata: {background_mode}",
             )
         if "soft_band" in src_files:
@@ -336,6 +340,26 @@ def validate_preprocess_metadata(metadata: dict, src_root_path: str | Path) -> N
             _require(
                 src_files["background_keep_prior"].get("mask_semantics") == BACKGROUND_KEEP_PRIOR_SEMANTICS,
                 "background_keep_prior artifact semantics mismatch.",
+            )
+        if "visible_support" in src_files:
+            _require(
+                src_files["visible_support"].get("mask_semantics") == BACKGROUND_VISIBLE_SUPPORT_SEMANTICS,
+                "visible_support artifact semantics mismatch.",
+            )
+        if "unresolved_region" in src_files:
+            _require(
+                src_files["unresolved_region"].get("mask_semantics") == UNRESOLVED_REGION_SEMANTICS,
+                "unresolved_region artifact semantics mismatch.",
+            )
+        if "background_confidence" in src_files:
+            _require(
+                src_files["background_confidence"].get("mask_semantics") == BACKGROUND_CONFIDENCE_SEMANTICS,
+                "background_confidence artifact semantics mismatch.",
+            )
+        if "background_source_provenance" in src_files:
+            _require(
+                src_files["background_source_provenance"].get("mask_semantics") == BACKGROUND_SOURCE_PROVENANCE_SEMANTICS,
+                "background_source_provenance artifact semantics mismatch.",
             )
         if "occlusion_band" in src_files:
             _require(
@@ -419,9 +443,13 @@ def resolve_preprocess_artifacts(
             "person_mask",
             "soft_band",
             "hard_foreground",
-            "soft_alpha",
-            "boundary_band",
+                "soft_alpha",
+                "boundary_band",
                 "background_keep_prior",
+                "visible_support",
+                "unresolved_region",
+                "background_confidence",
+                "background_source_provenance",
                 "occlusion_band",
                 "uncertainty_map",
                 "face_landmarks",
@@ -453,6 +481,10 @@ def validate_loaded_preprocess_bundle(
     soft_alpha_images: np.ndarray | None = None,
     boundary_band_images: np.ndarray | None = None,
     background_keep_prior_images: np.ndarray | None = None,
+    visible_support_images: np.ndarray | None = None,
+    unresolved_region_images: np.ndarray | None = None,
+    background_confidence_images: np.ndarray | None = None,
+    background_source_provenance_images: np.ndarray | None = None,
     occlusion_band_images: np.ndarray | None = None,
     uncertainty_map_images: np.ndarray | None = None,
 ) -> None:
@@ -508,6 +540,30 @@ def validate_loaded_preprocess_bundle(
                  f"Background keep prior frame count {background_keep_prior_images.shape[0]} does not match pose frame count {frame_count}.")
         _require(background_keep_prior_images.shape[1:3] == (cond_height, cond_width),
                  "Background keep prior size must match pose video size.")
+    if visible_support_images is not None:
+        validate_person_mask_frames("background visible support frames", visible_support_images)
+        _require(visible_support_images.shape[0] == frame_count,
+                 f"Background visible support frame count {visible_support_images.shape[0]} does not match pose frame count {frame_count}.")
+        _require(visible_support_images.shape[1:3] == (cond_height, cond_width),
+                 "Background visible support size must match pose video size.")
+    if unresolved_region_images is not None:
+        validate_person_mask_frames("background unresolved region frames", unresolved_region_images)
+        _require(unresolved_region_images.shape[0] == frame_count,
+                 f"Background unresolved region frame count {unresolved_region_images.shape[0]} does not match pose frame count {frame_count}.")
+        _require(unresolved_region_images.shape[1:3] == (cond_height, cond_width),
+                 "Background unresolved region size must match pose video size.")
+    if background_confidence_images is not None:
+        validate_person_mask_frames("background confidence frames", background_confidence_images)
+        _require(background_confidence_images.shape[0] == frame_count,
+                 f"Background confidence frame count {background_confidence_images.shape[0]} does not match pose frame count {frame_count}.")
+        _require(background_confidence_images.shape[1:3] == (cond_height, cond_width),
+                 "Background confidence size must match pose video size.")
+    if background_source_provenance_images is not None:
+        validate_person_mask_frames("background provenance frames", background_source_provenance_images)
+        _require(background_source_provenance_images.shape[0] == frame_count,
+                 f"Background provenance frame count {background_source_provenance_images.shape[0]} does not match pose frame count {frame_count}.")
+        _require(background_source_provenance_images.shape[1:3] == (cond_height, cond_width),
+                 "Background provenance size must match pose video size.")
     if occlusion_band_images is not None:
         validate_person_mask_frames("occlusion band frames", occlusion_band_images)
         _require(occlusion_band_images.shape[0] == frame_count,
@@ -637,6 +693,58 @@ def validate_loaded_preprocess_bundle(
         _require(
             background_keep_meta.get("mask_semantics") == BACKGROUND_KEEP_PRIOR_SEMANTICS,
             "background_keep_prior artifact semantics mismatch.",
+        )
+    if visible_support_images is not None:
+        _require("visible_support" in metadata["src_files"], "visible_support frames were loaded but metadata has no visible_support artifact.")
+        visible_support_meta = metadata["src_files"]["visible_support"]
+        _require(visible_support_meta["frame_count"] == visible_support_images.shape[0], "visible_support artifact frame_count mismatch.")
+        _require(
+            visible_support_meta["height"] == visible_support_images.shape[1]
+            and visible_support_meta["width"] == visible_support_images.shape[2],
+            "visible_support artifact size mismatch.",
+        )
+        _require(
+            visible_support_meta.get("mask_semantics") == BACKGROUND_VISIBLE_SUPPORT_SEMANTICS,
+            "visible_support artifact semantics mismatch.",
+        )
+    if unresolved_region_images is not None:
+        _require("unresolved_region" in metadata["src_files"], "unresolved_region frames were loaded but metadata has no unresolved_region artifact.")
+        unresolved_meta = metadata["src_files"]["unresolved_region"]
+        _require(unresolved_meta["frame_count"] == unresolved_region_images.shape[0], "unresolved_region artifact frame_count mismatch.")
+        _require(
+            unresolved_meta["height"] == unresolved_region_images.shape[1]
+            and unresolved_meta["width"] == unresolved_region_images.shape[2],
+            "unresolved_region artifact size mismatch.",
+        )
+        _require(
+            unresolved_meta.get("mask_semantics") == UNRESOLVED_REGION_SEMANTICS,
+            "unresolved_region artifact semantics mismatch.",
+        )
+    if background_confidence_images is not None:
+        _require("background_confidence" in metadata["src_files"], "background_confidence frames were loaded but metadata has no background_confidence artifact.")
+        background_confidence_meta = metadata["src_files"]["background_confidence"]
+        _require(background_confidence_meta["frame_count"] == background_confidence_images.shape[0], "background_confidence artifact frame_count mismatch.")
+        _require(
+            background_confidence_meta["height"] == background_confidence_images.shape[1]
+            and background_confidence_meta["width"] == background_confidence_images.shape[2],
+            "background_confidence artifact size mismatch.",
+        )
+        _require(
+            background_confidence_meta.get("mask_semantics") == BACKGROUND_CONFIDENCE_SEMANTICS,
+            "background_confidence artifact semantics mismatch.",
+        )
+    if background_source_provenance_images is not None:
+        _require("background_source_provenance" in metadata["src_files"], "background_source_provenance frames were loaded but metadata has no background_source_provenance artifact.")
+        background_provenance_meta = metadata["src_files"]["background_source_provenance"]
+        _require(background_provenance_meta["frame_count"] == background_source_provenance_images.shape[0], "background_source_provenance artifact frame_count mismatch.")
+        _require(
+            background_provenance_meta["height"] == background_source_provenance_images.shape[1]
+            and background_provenance_meta["width"] == background_source_provenance_images.shape[2],
+            "background_source_provenance artifact size mismatch.",
+        )
+        _require(
+            background_provenance_meta.get("mask_semantics") == BACKGROUND_SOURCE_PROVENANCE_SEMANTICS,
+            "background_source_provenance artifact semantics mismatch.",
         )
     if occlusion_band_images is not None:
         _require("occlusion_band" in metadata["src_files"], "occlusion_band frames were loaded but metadata has no occlusion_band artifact.")

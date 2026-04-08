@@ -96,11 +96,15 @@ from sam_runtime import (
 from sam_utils import build_sam2_video_predictor
 from wan.utils.animate_contract import (
     BACKGROUND_KEEP_PRIOR_SEMANTICS,
+    BACKGROUND_CONFIDENCE_SEMANTICS,
+    BACKGROUND_SOURCE_PROVENANCE_SEMANTICS,
+    BACKGROUND_VISIBLE_SUPPORT_SEMANTICS,
     BOUNDARY_BAND_SEMANTICS,
     HARD_FOREGROUND_SEMANTICS,
     OCCLUSION_BAND_SEMANTICS,
     SOFT_ALPHA_SEMANTICS,
     SOFT_BAND_SEMANTICS,
+    UNRESOLVED_REGION_SEMANTICS,
     UNCERTAINTY_MAP_SEMANTICS,
     load_image_rgb,
     validate_rgb_video,
@@ -258,10 +262,14 @@ class ProcessPipeline():
         bg_inpaint_method="telea",
         bg_inpaint_mask_expand=16,
         bg_inpaint_radius=5.0,
-        bg_temporal_smooth_strength=0.0,
+        bg_temporal_smooth_strength=0.14,
         bg_video_window_radius=4,
         bg_video_min_visible_count=2,
         bg_video_blend_strength=0.7,
+        bg_video_global_min_visible_count=3,
+        bg_video_confidence_threshold=0.30,
+        bg_video_global_blend_strength=0.95,
+        bg_video_consistency_scale=18.0,
         reference_normalization_mode="none",
         reference_target_bbox_source="median_first_n",
         reference_target_bbox_frames=16,
@@ -1006,6 +1014,10 @@ class ProcessPipeline():
                 bg_video_window_radius=bg_video_window_radius,
                 bg_video_min_visible_count=bg_video_min_visible_count,
                 bg_video_blend_strength=bg_video_blend_strength,
+                bg_video_global_min_visible_count=bg_video_global_min_visible_count,
+                bg_video_confidence_threshold=bg_video_confidence_threshold,
+                bg_video_global_blend_strength=bg_video_global_blend_strength,
+                bg_video_consistency_scale=bg_video_consistency_scale,
             )
             bg_images = np.stack(bg_images).astype(np.uint8)
             runtime_stage_seconds["background_clean_plate"] = time.perf_counter() - background_start
@@ -1282,20 +1294,36 @@ class ProcessPipeline():
                     mask_semantics="background_inpaint_region",
                 )
                 qa_background_support = write_person_mask_artifact(
-                    mask_frames=background_debug["support_mask"].astype(np.float32),
+                    mask_frames=background_debug["visible_support_map"].astype(np.float32),
                     output_root=output_path,
                     stem="background_visible_support",
                     artifact_format="mp4",
                     fps=fps,
-                    mask_semantics="background_visible_support",
+                    mask_semantics=BACKGROUND_VISIBLE_SUPPORT_SEMANTICS,
                 )
                 qa_background_unresolved = write_person_mask_artifact(
-                    mask_frames=background_debug["unresolved_mask"].astype(np.float32),
+                    mask_frames=background_debug["unresolved_region"].astype(np.float32),
                     output_root=output_path,
                     stem="background_unresolved_region",
                     artifact_format="mp4",
                     fps=fps,
-                    mask_semantics="background_unresolved_region",
+                    mask_semantics=UNRESOLVED_REGION_SEMANTICS,
+                )
+                qa_background_confidence = write_person_mask_artifact(
+                    mask_frames=background_debug["background_confidence"].astype(np.float32),
+                    output_root=output_path,
+                    stem="background_confidence",
+                    artifact_format="mp4",
+                    fps=fps,
+                    mask_semantics=BACKGROUND_CONFIDENCE_SEMANTICS,
+                )
+                qa_background_provenance = write_person_mask_artifact(
+                    mask_frames=background_debug["background_source_provenance"].astype(np.float32),
+                    output_root=output_path,
+                    stem="background_source_provenance",
+                    artifact_format="mp4",
+                    fps=fps,
+                    mask_semantics=BACKGROUND_SOURCE_PROVENANCE_SEMANTICS,
                 )
                 qa_outputs.update({
                     "background_hole": qa_background_hole["path"],
@@ -1305,6 +1333,8 @@ class ProcessPipeline():
                     "background_inpaint_mask": qa_background_mask["path"],
                     "background_visible_support": qa_background_support["path"],
                     "background_unresolved_region": qa_background_unresolved["path"],
+                    "background_confidence": qa_background_confidence["path"],
+                    "background_source_provenance": qa_background_provenance["path"],
                 })
                 if background_debug.get("clean_plate_image_background") is not None:
                     qa_background_image = write_rgb_artifact(
@@ -1324,6 +1354,15 @@ class ProcessPipeline():
                         fps=fps,
                     )
                     qa_outputs["background_clean_plate_video"] = qa_background_video["path"]
+                if background_debug.get("clean_plate_video_v2_background") is not None:
+                    qa_background_video_v2 = write_rgb_artifact(
+                        frames=background_debug["clean_plate_video_v2_background"].astype(np.uint8),
+                        output_root=output_path,
+                        stem="background_clean_plate_video_v2",
+                        artifact_format="mp4",
+                        fps=fps,
+                    )
+                    qa_outputs["background_clean_plate_video_v2"] = qa_background_video_v2["path"]
                 if reference_normalization_mode != "none":
                     original_canvas = padding_resize(refer_img, height, width)
                     original_bbox_canvas = project_bbox_with_letterbox(
@@ -1502,6 +1541,71 @@ class ProcessPipeline():
                 fps=fps,
                 mask_semantics=BACKGROUND_KEEP_PRIOR_SEMANTICS,
             )
+            src_files["visible_support"] = write_person_mask_artifact(
+                mask_frames=background_debug["visible_support_map"].astype(np.float32),
+                output_root=output_path,
+                stem="src_visible_support",
+                artifact_format=self._artifact_format(save_format, lossless_intermediate, "visible_support", is_mask=True),
+                fps=fps,
+                mask_semantics=BACKGROUND_VISIBLE_SUPPORT_SEMANTICS,
+            )
+            src_files["visible_support"].update({
+                "source": "background_clean_plate",
+                "background_mode": background_debug["background_mode"],
+                "support_summary": {
+                    "mean": float(background_debug["visible_support_map"].mean()),
+                    "p80": float(np.quantile(background_debug["visible_support_map"], 0.8)),
+                    "p95": float(np.quantile(background_debug["visible_support_map"], 0.95)),
+                },
+            })
+            src_files["unresolved_region"] = write_person_mask_artifact(
+                mask_frames=background_debug["unresolved_region"].astype(np.float32),
+                output_root=output_path,
+                stem="src_unresolved_region",
+                artifact_format=self._artifact_format(save_format, lossless_intermediate, "unresolved_region", is_mask=True),
+                fps=fps,
+                mask_semantics=UNRESOLVED_REGION_SEMANTICS,
+            )
+            src_files["unresolved_region"].update({
+                "source": "background_clean_plate",
+                "background_mode": background_debug["background_mode"],
+                "ratio_mean": float(background_debug["stats"].get("unresolved_ratio_mean", 0.0)),
+            })
+            src_files["background_confidence"] = write_person_mask_artifact(
+                mask_frames=background_debug["background_confidence"].astype(np.float32),
+                output_root=output_path,
+                stem="src_background_confidence",
+                artifact_format=self._artifact_format(save_format, lossless_intermediate, "background_confidence", is_mask=True),
+                fps=fps,
+                mask_semantics=BACKGROUND_CONFIDENCE_SEMANTICS,
+            )
+            src_files["background_confidence"].update({
+                "source": "background_clean_plate",
+                "background_mode": background_debug["background_mode"],
+                "confidence_summary": {
+                    "mean": float(background_debug["background_confidence"].mean()),
+                    "p80": float(np.quantile(background_debug["background_confidence"], 0.8)),
+                    "p95": float(np.quantile(background_debug["background_confidence"], 0.95)),
+                },
+            })
+            src_files["background_source_provenance"] = write_person_mask_artifact(
+                mask_frames=background_debug["background_source_provenance"].astype(np.float32),
+                output_root=output_path,
+                stem="src_background_source_provenance",
+                artifact_format=self._artifact_format(save_format, lossless_intermediate, "background_source_provenance", is_mask=True),
+                fps=fps,
+                mask_semantics=BACKGROUND_SOURCE_PROVENANCE_SEMANTICS,
+            )
+            src_files["background_source_provenance"].update({
+                "source": "background_clean_plate",
+                "background_mode": background_debug["background_mode"],
+                "value_encoding": {
+                    "0.0": "passthrough",
+                    "0.33333334": "image_fallback",
+                    "0.6666667": "global_temporal",
+                    "1.0": "local_temporal",
+                },
+            })
             src_files["background"]["background_mode"] = background_debug["background_mode"]
             runtime_stage_seconds["write_outputs"] = time.perf_counter() - write_start
             runtime_stage_seconds["total"] = time.perf_counter() - overall_start

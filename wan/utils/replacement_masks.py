@@ -38,6 +38,9 @@ def compose_background_keep_mask(
     *,
     soft_alpha: torch.Tensor | np.ndarray | None = None,
     background_keep_prior: torch.Tensor | np.ndarray | None = None,
+    visible_support: torch.Tensor | np.ndarray | None = None,
+    unresolved_region: torch.Tensor | np.ndarray | None = None,
+    background_confidence: torch.Tensor | np.ndarray | None = None,
     mode: str = "soft_band",
     boundary_strength: float = 0.5,
 ) -> torch.Tensor:
@@ -50,7 +53,28 @@ def compose_background_keep_mask(
     if background_keep_prior is not None:
         if not isinstance(background_keep_prior, torch.Tensor):
             background_keep_prior = torch.as_tensor(background_keep_prior, dtype=torch.float32)
-        return torch.clamp(background_keep_prior.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
+        background_keep = background_keep_prior.to(dtype=torch.float32, device=background_keep.device)
+        if visible_support is not None:
+            if not isinstance(visible_support, torch.Tensor):
+                visible_support = torch.as_tensor(visible_support, dtype=torch.float32)
+            background_keep = background_keep * (
+                0.25 + 0.75 * torch.clamp(visible_support.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
+            )
+        if background_confidence is not None:
+            if not isinstance(background_confidence, torch.Tensor):
+                background_confidence = torch.as_tensor(background_confidence, dtype=torch.float32)
+            background_keep = background_keep * torch.clamp(
+                background_confidence.to(dtype=torch.float32, device=background_keep.device),
+                0.0,
+                1.0,
+            )
+        if unresolved_region is not None:
+            if not isinstance(unresolved_region, torch.Tensor):
+                unresolved_region = torch.as_tensor(unresolved_region, dtype=torch.float32)
+            background_keep = background_keep * (
+                1.0 - 0.75 * torch.clamp(unresolved_region.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
+            )
+        return torch.clamp(background_keep, 0.0, 1.0)
     if mode != "soft_band":
         raise ValueError(f"Unsupported replacement mask mode: {mode}")
     if soft_alpha is not None:

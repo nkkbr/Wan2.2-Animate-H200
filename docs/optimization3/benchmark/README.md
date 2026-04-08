@@ -36,6 +36,8 @@
   - Step 04 的正式执行结论、face stack 指标与冻结判断
 - `05-multiscale-pose-and-motion-stack-findings.md`
   - Step 05 的正式执行结论、多轮 motion stack 对照与冻结判断
+- `06-visibility-aware-clean-plate-background-findings.md`
+  - Step 06 的正式执行结论、五轮 clean plate 2.0 对照与冻结判断
 
 
 ## 3. Benchmark 分层

@@ -62,6 +62,16 @@ def _temporal_fluctuation(frames, region):
     return float((diffs * region_union).sum() / denom)
 
 
+def _corr(a, b, mask):
+    aa = np.asarray(a, dtype=np.float32)[mask > 0.5].reshape(-1)
+    bb = np.asarray(b, dtype=np.float32)[mask > 0.5].reshape(-1)
+    if aa.size < 2 or bb.size < 2:
+        return 0.0
+    if np.allclose(aa.std(), 0.0) or np.allclose(bb.std(), 0.0):
+        return 0.0
+    return float(np.corrcoef(aa, bb)[0, 1])
+
+
 def main():
     frame_count, height, width = 8, 72, 96
     background, frames, masks = _make_frames(frame_count, height, width)
@@ -96,18 +106,55 @@ def main():
         bg_video_min_visible_count=1,
         bg_video_blend_strength=0.8,
     )
+    video_v2_bg, video_v2_debug = build_clean_plate_background(
+        frames,
+        masks,
+        bg_inpaint_mode="video_v2",
+        soft_band=soft_band,
+        background_keep_prior=background_keep_prior,
+        bg_inpaint_mask_expand=6,
+        bg_inpaint_radius=3.0,
+        bg_inpaint_method="telea",
+        bg_temporal_smooth_strength=0.05,
+        bg_video_window_radius=2,
+        bg_video_min_visible_count=1,
+        bg_video_blend_strength=0.8,
+        bg_video_global_min_visible_count=2,
+        bg_video_confidence_threshold=0.25,
+        bg_video_global_blend_strength=0.9,
+        bg_video_consistency_scale=12.0,
+    )
 
     image_mae = _masked_mae(image_bg, background, masks)
     video_mae = _masked_mae(video_bg, background, masks)
+    video_v2_mae = _masked_mae(video_v2_bg, background, masks)
     image_temporal = _temporal_fluctuation(image_bg, masks)
     video_temporal = _temporal_fluctuation(video_bg, masks)
+    video_v2_temporal = _temporal_fluctuation(video_v2_bg, masks)
     assert video_mae < image_mae, f"clean_plate_video should reduce masked MAE ({video_mae:.3f} !< {image_mae:.3f})"
     assert video_temporal < image_temporal, (
         f"clean_plate_video should reduce temporal fluctuation ({video_temporal:.3f} !< {image_temporal:.3f})"
     )
+    assert video_v2_mae <= video_mae * 1.08, (
+        f"clean_plate_video_v2 should keep masked MAE within 8% of video_v1 while improving stability ({video_v2_mae:.3f} !<= {video_mae * 1.08:.3f})"
+    )
+    assert video_v2_temporal < video_temporal, (
+        f"clean_plate_video_v2 should further reduce temporal fluctuation ({video_v2_temporal:.3f} !< {video_temporal:.3f})"
+    )
     assert video_debug["background_mode"] == "clean_plate_video"
+    assert video_v2_debug["background_mode"] == "clean_plate_video_v2"
     assert image_debug["background_mode"] == "clean_plate_image"
     assert video_debug["support_mask"].shape == masks.shape
+    assert video_v2_debug["visible_support_map"].shape == masks.shape
+    assert video_v2_debug["background_confidence"].shape == masks.shape
+    assert video_v2_debug["background_source_provenance"].shape == masks.shape
+    assert video_v2_debug["stats"]["unresolved_ratio_mean"] < video_debug["stats"]["unresolved_ratio_mean"]
+
+    video_v2_error = np.abs(video_v2_bg.astype(np.float32) - background.astype(np.float32)[None]).mean(axis=-1)
+    support_error_corr = _corr(video_v2_debug["visible_support_map"], video_v2_error, masks)
+    confidence_error_corr = _corr(video_v2_debug["background_confidence"], video_v2_error, masks)
+    assert support_error_corr < -0.15, f"visible support should negatively correlate with error, got {support_error_corr:.3f}"
+    assert confidence_error_corr < -0.15, f"background confidence should negatively correlate with error, got {confidence_error_corr:.3f}"
 
     with tempfile.TemporaryDirectory() as tmpdir:
         metadata = build_preprocess_metadata(
@@ -133,11 +180,14 @@ def main():
                 "pose": {"path": "src_pose.mp4", "type": "video", "format": "mp4", "frame_count": frame_count, "height": height, "width": width, "channels": 3, "color_space": "rgb", "dtype": "uint8", "shape": [frame_count, height, width, 3], "fps": 30.0},
                 "face": {"path": "src_face.mp4", "type": "video", "format": "mp4", "frame_count": frame_count, "height": 512, "width": 512, "channels": 3, "color_space": "rgb", "dtype": "uint8", "shape": [frame_count, 512, 512, 3], "fps": 30.0},
                 "reference": {"path": "src_ref.png", "type": "image", "format": "png", "height": 1024, "width": 768, "channels": 3, "color_space": "rgb", "dtype": "uint8", "shape": [1024, 768, 3], "resized_height": height, "resized_width": width},
-                "background": {"path": "src_bg.mp4", "type": "video", "format": "mp4", "frame_count": frame_count, "height": height, "width": width, "channels": 3, "color_space": "rgb", "dtype": "uint8", "shape": [frame_count, height, width, 3], "fps": 30.0, "background_mode": "clean_plate_video"},
+                "background": {"path": "src_bg.mp4", "type": "video", "format": "mp4", "frame_count": frame_count, "height": height, "width": width, "channels": 3, "color_space": "rgb", "dtype": "uint8", "shape": [frame_count, height, width, 3], "fps": 30.0, "background_mode": "clean_plate_video_v2"},
                 "person_mask": {"path": "src_mask.mp4", "type": "video", "format": "mp4", "frame_count": frame_count, "height": height, "width": width, "channels": 1, "stored_channels": 3, "dtype": "float32", "shape": [frame_count, height, width], "fps": 30.0, "value_range": [0.0, 1.0], "stored_value_range": [0, 255], "mask_semantics": "person_foreground"},
+                "visible_support": {"path": "src_visible_support.npz", "type": "video", "format": "npz", "frame_count": frame_count, "height": height, "width": width, "channels": 1, "stored_channels": 1, "dtype": "float32", "shape": [frame_count, height, width], "fps": 30.0, "value_range": [0.0, 1.0], "stored_value_range": [0.0, 1.0], "mask_semantics": "background_visible_support"},
+                "unresolved_region": {"path": "src_unresolved_region.npz", "type": "video", "format": "npz", "frame_count": frame_count, "height": height, "width": width, "channels": 1, "stored_channels": 1, "dtype": "float32", "shape": [frame_count, height, width], "fps": 30.0, "value_range": [0.0, 1.0], "stored_value_range": [0.0, 1.0], "mask_semantics": "background_unresolved_region"},
+                "background_confidence": {"path": "src_background_confidence.npz", "type": "video", "format": "npz", "frame_count": frame_count, "height": height, "width": width, "channels": 1, "stored_channels": 1, "dtype": "float32", "shape": [frame_count, height, width], "fps": 30.0, "value_range": [0.0, 1.0], "stored_value_range": [0.0, 1.0], "mask_semantics": "background_confidence"},
             },
             background_settings={
-                "bg_inpaint_mode": "video",
+                "bg_inpaint_mode": "video_v2",
                 "bg_inpaint_method": "telea",
                 "bg_inpaint_mask_expand": 6,
                 "bg_inpaint_radius": 3.0,
@@ -145,15 +195,19 @@ def main():
                 "bg_video_window_radius": 2,
                 "bg_video_min_visible_count": 1,
                 "bg_video_blend_strength": 0.8,
-                "stats": video_debug["stats"],
+                "bg_video_global_min_visible_count": 2,
+                "bg_video_confidence_threshold": 0.25,
+                "bg_video_global_blend_strength": 0.9,
+                "bg_video_consistency_scale": 12.0,
+                "stats": video_v2_debug["stats"],
             },
         )
-        assert metadata["processing"]["background"]["bg_inpaint_mode"] == "video"
+        assert metadata["processing"]["background"]["bg_inpaint_mode"] == "video_v2"
         assert metadata["processing"]["background"]["stats"]["support_ratio_mean"] > 0.0
-        assert metadata["src_files"]["background"]["background_mode"] == "clean_plate_video"
+        assert metadata["src_files"]["background"]["background_mode"] == "clean_plate_video_v2"
 
     print("Synthetic clean-plate video consistency: PASS")
-    print("Synthetic clean-plate video metadata contract: PASS")
+    print("Synthetic visibility-aware clean-plate video metadata contract: PASS")
 
 
 if __name__ == "__main__":

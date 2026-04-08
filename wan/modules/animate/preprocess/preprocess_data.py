@@ -675,8 +675,8 @@ def _parse_args():
         "--bg_inpaint_mode",
         type=str,
         default="none",
-        choices=["none", "image", "video"],
-        help="Background construction mode for replacement. 'none' keeps the legacy hole background, 'image' builds a clean plate with frame-wise inpainting."
+        choices=["none", "image", "video", "video_v2"],
+        help="Background construction mode for replacement. 'video' keeps the legacy clean_plate_video v1 path, while 'video_v2' enables the visibility-aware background 2.0 path."
     )
     parser.add_argument(
         "--bg_inpaint_method",
@@ -700,7 +700,7 @@ def _parse_args():
     parser.add_argument(
         "--bg_temporal_smooth_strength",
         type=float,
-        default=0.0,
+        default=0.14,
         help="EMA-like temporal smoothing strength applied only inside inpainted regions of the clean plate."
     )
     parser.add_argument(
@@ -720,6 +720,30 @@ def _parse_args():
         type=float,
         default=0.7,
         help="Blend strength between temporal background aggregation and the image clean-plate fallback in clean_plate_video mode."
+    )
+    parser.add_argument(
+        "--bg_video_global_min_visible_count",
+        type=int,
+        default=3,
+        help="Minimum full-video visible observation count required before visibility-aware clean_plate_video_v2 trusts a global temporal background estimate."
+    )
+    parser.add_argument(
+        "--bg_video_confidence_threshold",
+        type=float,
+        default=0.30,
+        help="Confidence threshold below which clean_plate_video_v2 marks an inpainted pixel as unresolved."
+    )
+    parser.add_argument(
+        "--bg_video_global_blend_strength",
+        type=float,
+        default=0.95,
+        help="Blend strength between the full-video global temporal estimate and the image clean-plate fallback in clean_plate_video_v2."
+    )
+    parser.add_argument(
+        "--bg_video_consistency_scale",
+        type=float,
+        default=18.0,
+        help="Scale used to convert temporal observation deviation into confidence for clean_plate_video_v2."
     )
     parser.add_argument(
         "--reference_normalization_mode",
@@ -1030,6 +1054,10 @@ if __name__ == '__main__':
                                             bg_video_window_radius=args.bg_video_window_radius,
                                             bg_video_min_visible_count=args.bg_video_min_visible_count,
                                             bg_video_blend_strength=args.bg_video_blend_strength,
+                                            bg_video_global_min_visible_count=args.bg_video_global_min_visible_count,
+                                            bg_video_confidence_threshold=args.bg_video_confidence_threshold,
+                                            bg_video_global_blend_strength=args.bg_video_global_blend_strength,
+                                            bg_video_consistency_scale=args.bg_video_consistency_scale,
                                             reference_normalization_mode=args.reference_normalization_mode,
                                             reference_target_bbox_source=args.reference_target_bbox_source,
                                             reference_target_bbox_frames=args.reference_target_bbox_frames,
@@ -1180,6 +1208,10 @@ if __name__ == '__main__':
                 "bg_video_window_radius": args.bg_video_window_radius,
                 "bg_video_min_visible_count": args.bg_video_min_visible_count,
                 "bg_video_blend_strength": args.bg_video_blend_strength,
+                "bg_video_global_min_visible_count": args.bg_video_global_min_visible_count,
+                "bg_video_confidence_threshold": args.bg_video_confidence_threshold,
+                "bg_video_global_blend_strength": args.bg_video_global_blend_strength,
+                "bg_video_consistency_scale": args.bg_video_consistency_scale,
                 "stats": pipeline_outputs.get("background", {}),
             },
             boundary_fusion_settings={

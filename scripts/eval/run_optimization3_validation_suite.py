@@ -195,7 +195,9 @@ def _build_preprocess_command(
         "--matting_mode",
         "heuristic",
         "--bg_temporal_smooth_strength",
-        "0.1",
+        "0.14",
+        "--bg_video_global_blend_strength",
+        "0.95",
     ]
     if multistage_preprocess_mode != "none":
         command.extend(["--multistage_preprocess_mode", multistage_preprocess_mode])
@@ -270,7 +272,7 @@ def main():
     parser.add_argument("--manifest", type=str, default=str(DEFAULT_MANIFEST))
     parser.add_argument("--gate_policy", type=str, default=str(DEFAULT_GATE_POLICY))
     parser.add_argument("--preprocess_runtime_profile", choices=["h200_safe", "h200_aggressive", "h200_extreme"], default="h200_safe")
-    parser.add_argument("--bg_inpaint_mode", choices=["image", "video"], default="image")
+    parser.add_argument("--bg_inpaint_mode", choices=["image", "video", "video_v2"], default="image")
     parser.add_argument("--multistage_preprocess_mode", choices=["none", "h200_extreme"], default="none")
     parser.add_argument("--disable_person_roi_refine", action="store_true", default=False)
     parser.add_argument("--disable_face_roi_refine", action="store_true", default=False)
