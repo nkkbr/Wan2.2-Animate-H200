@@ -34,6 +34,8 @@
   - Step 03 的正式执行结论、多轮对照与 uncertainty 冻结判断
 - `04-complete-face-analysis-stack-findings.md`
   - Step 04 的正式执行结论、face stack 指标与冻结判断
+- `05-multiscale-pose-and-motion-stack-findings.md`
+  - Step 05 的正式执行结论、多轮 motion stack 对照与冻结判断
 
 
 ## 3. Benchmark 分层

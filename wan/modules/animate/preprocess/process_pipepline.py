@@ -120,6 +120,11 @@ from face_analysis import (
     run_face_analysis,
     write_face_analysis_artifacts,
 )
+from pose_motion_analysis import (
+    make_pose_uncertainty_preview,
+    run_pose_motion_stack,
+    write_pose_motion_artifacts,
+)
 from matting_adapter import make_matting_alpha_preview, run_matting_adapter
 from multistage_preprocess import (
     fuse_multistage_pose_metas,
@@ -298,6 +303,15 @@ class ProcessPipeline():
         face_difficulty_expand_ratio=1.20,
         face_rerun_difficulty_threshold=0.48,
         face_alpha_blur_kernel=7,
+        pose_motion_stack_mode="v1",
+        pose_motion_body_bidirectional_strength=0.86,
+        pose_motion_hand_bidirectional_strength=0.82,
+        pose_motion_face_bidirectional_strength=0.88,
+        pose_motion_local_refine_strength=0.82,
+        pose_motion_limb_roi_expand_ratio=1.32,
+        pose_motion_hand_roi_expand_ratio=1.75,
+        pose_motion_velocity_spike_quantile=0.88,
+        pose_motion_uncertainty_blur_kernel=21,
         preprocess_runtime_profile="legacy_safe",
         iterations=3,
         k=7,
@@ -908,6 +922,48 @@ class ProcessPipeline():
             occlusion_band_masks = boundary_fusion["occlusion_band"].astype(np.float32)
             uncertainty_map_masks = boundary_fusion["uncertainty_map"].astype(np.float32)
             background_keep_prior_masks = boundary_fusion["background_keep_prior"].astype(np.float32)
+            pose_motion_start = time.perf_counter()
+            pose_motion_analysis = run_pose_motion_stack(
+                export_frames=np.stack(export_frames).astype(np.uint8),
+                pose_metas=tpl_pose_metas,
+                raw_pose_metas=raw_pose_metas,
+                image_shape=(height, width),
+                occlusion_band=occlusion_band_masks,
+                uncertainty_map=uncertainty_map_masks,
+                mode=pose_motion_stack_mode,
+                body_conf_thresh=pose_conf_thresh_body,
+                hand_conf_thresh=pose_conf_thresh_hand,
+                face_conf_thresh=pose_conf_thresh_face,
+                body_bidirectional_strength=pose_motion_body_bidirectional_strength,
+                hand_bidirectional_strength=pose_motion_hand_bidirectional_strength,
+                face_bidirectional_strength=pose_motion_face_bidirectional_strength,
+                local_refine_strength=pose_motion_local_refine_strength,
+                limb_roi_expand_ratio=pose_motion_limb_roi_expand_ratio,
+                hand_roi_expand_ratio=pose_motion_hand_roi_expand_ratio,
+                velocity_spike_quantile=pose_motion_velocity_spike_quantile,
+                uncertainty_blur_kernel=pose_motion_uncertainty_blur_kernel,
+            )
+            tpl_pose_metas = pose_motion_analysis["optimized_pose_metas"]
+            face_bboxes, face_bbox_curve = stabilize_face_bboxes(
+                tpl_pose_metas,
+                image_shape=(analysis_height, analysis_width),
+                scale=1.3,
+                conf_thresh=face_conf_thresh,
+                min_valid_points=face_min_valid_points,
+                smooth_method=face_bbox_smooth_method,
+                smooth_strength=min(0.99, face_bbox_smooth_strength + 0.06),
+                max_scale_change=face_bbox_max_scale_change,
+                max_center_shift=face_bbox_max_center_shift,
+                hold_frames=face_bbox_hold_frames,
+            )
+            tpl_retarget_pose_metas = [AAPoseMeta.from_humanapi_meta(meta) for meta in tpl_pose_metas]
+            cond_images = []
+            for meta in tpl_retarget_pose_metas:
+                canvas = np.zeros_like(refer_canvas)
+                conditioning_image = draw_aapose_by_meta_new(canvas, meta)
+                cond_images.append(conditioning_image)
+            cond_images = np.stack(cond_images).astype(np.uint8)
+            runtime_stage_seconds["pose_motion_stack"] = time.perf_counter() - pose_motion_start
             face_analysis = None
             if face_analysis_mode != "none":
                 face_analysis_start = time.perf_counter()
@@ -962,6 +1018,14 @@ class ProcessPipeline():
                 "pose_conf_curve": "pose_conf_curve.json",
                 "mask_stats": "mask_stats.json",
             }
+            pose_motion_artifacts = write_pose_motion_artifacts(output_path, pose_motion_analysis, fps, write_json_fn=write_curve_json)
+            qa_outputs.update({
+                "pose_tracks": pose_motion_artifacts["pose_tracks"]["path"],
+                "limb_tracks": pose_motion_artifacts["limb_tracks"]["path"],
+                "hand_tracks": pose_motion_artifacts["hand_tracks"]["path"],
+                "pose_visibility": pose_motion_artifacts["pose_visibility"]["path"],
+                "pose_uncertainty": pose_motion_artifacts["pose_uncertainty"]["path"],
+            })
             face_artifacts = {}
             if face_analysis is not None:
                 face_artifacts = write_face_analysis_artifacts(output_path, face_analysis, fps, write_json_fn=write_curve_json)
@@ -1018,6 +1082,25 @@ class ProcessPipeline():
                     "sam_prompts_overlay": qa_prompt_overlay["path"],
                     "sam_prompt_keyframes": prompt_keyframes["path"],
                 }
+                qa_pose_uncertainty = write_person_mask_artifact(
+                    mask_frames=pose_motion_analysis["pose_uncertainty"],
+                    output_root=output_path,
+                    stem="pose_uncertainty_overlay",
+                    artifact_format="mp4",
+                    fps=fps,
+                    mask_semantics="pose_uncertainty",
+                )
+                qa_pose_uncertainty_heatmap = write_rgb_artifact(
+                    frames=make_pose_uncertainty_preview(pose_motion_analysis["pose_uncertainty"]),
+                    output_root=output_path,
+                    stem="pose_uncertainty_heatmap",
+                    artifact_format="mp4",
+                    fps=fps,
+                )
+                qa_outputs.update({
+                    "pose_uncertainty_overlay": qa_pose_uncertainty["path"],
+                    "pose_uncertainty_heatmap": qa_pose_uncertainty_heatmap["path"],
+                })
                 if face_analysis is not None:
                     qa_face_landmark_overlay = write_rgb_artifact(
                         frames=make_face_landmark_overlay(np.stack(export_frames).astype(np.uint8), face_bbox_curve, face_analysis["landmarks_json"], face_analysis["head_pose_json"]),
@@ -1313,6 +1396,7 @@ class ProcessPipeline():
                     "resized_width": int(width),
                 },
             }
+            src_files.update(pose_motion_artifacts)
             if face_artifacts:
                 src_files.update(face_artifacts)
             src_files["hard_foreground"] = {
@@ -1438,10 +1522,18 @@ class ProcessPipeline():
                 "mode": face_analysis_mode,
                 "stats": {} if face_analysis is None else face_analysis["stats"],
             }
+            runtime_stats["pose_motion_stack"] = {
+                "mode": pose_motion_stack_mode,
+                "stats": pose_motion_analysis["stats"],
+            }
             runtime_stats["multistage"] = multistage_stats
             runtime_metrics["background_mode"] = background_debug.get("background_mode")
             runtime_metrics["face_tracking_center_jitter_mean"] = None if face_analysis is None else float(face_analysis["stats"].get("center_jitter_mean", 0.0))
             runtime_metrics["face_landmark_confidence_mean"] = None if face_analysis is None else float(face_analysis["stats"].get("landmark_confidence_mean", 0.0))
+            runtime_metrics["body_jitter_mean"] = float(pose_motion_analysis["stats"].get("body_jitter_mean", 0.0))
+            runtime_metrics["hand_jitter_mean"] = float(pose_motion_analysis["stats"].get("hand_jitter_mean", 0.0))
+            runtime_metrics["limb_continuity_score"] = float(pose_motion_analysis["stats"].get("limb_continuity_score", 0.0))
+            runtime_metrics["velocity_spike_rate"] = float(pose_motion_analysis["stats"].get("velocity_spike_rate", 0.0))
             runtime_metrics["person_roi_coverage_ratio"] = float(
                 multistage_stats["person_roi_analysis"].get("proposal_stats", {}).get("coverage_ratio", 0.0)
             )
@@ -1477,6 +1569,10 @@ class ProcessPipeline():
                 "face_analysis": {
                     "mode": face_analysis_mode,
                     "stats": {} if face_analysis is None else face_analysis["stats"],
+                },
+                "pose_motion_stack": {
+                    "mode": pose_motion_stack_mode,
+                    "stats": pose_motion_analysis["stats"],
                 },
                 "multistage": multistage_stats,
                 "sam_runtime": dict(self.sam_runtime_config),

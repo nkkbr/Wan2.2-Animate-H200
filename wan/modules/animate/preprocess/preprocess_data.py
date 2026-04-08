@@ -284,6 +284,61 @@ def _parse_args():
         help="Gaussian blur kernel size used when building face alpha."
     )
     parser.add_argument(
+        "--pose_motion_stack_mode",
+        type=str,
+        default="v1",
+        choices=["none", "v1"],
+        help="Structured multiscale pose/motion analysis stack. 'none' keeps legacy pose stream but still exports baseline motion artifacts; 'v1' enables bidirectional smoothing, limb-local refine, hand-local refine, visibility states, and pose uncertainty."
+    )
+    parser.add_argument(
+        "--pose_motion_body_bidirectional_strength",
+        type=float,
+        default=0.86,
+        help="Bidirectional smoothing strength for global body tracks."
+    )
+    parser.add_argument(
+        "--pose_motion_hand_bidirectional_strength",
+        type=float,
+        default=0.82,
+        help="Bidirectional smoothing strength for hand tracks."
+    )
+    parser.add_argument(
+        "--pose_motion_face_bidirectional_strength",
+        type=float,
+        default=0.88,
+        help="Bidirectional smoothing strength for face keypoints inside the motion stack."
+    )
+    parser.add_argument(
+        "--pose_motion_local_refine_strength",
+        type=float,
+        default=0.82,
+        help="Local ROI refinement smoothing strength used for limb and hand subtracks."
+    )
+    parser.add_argument(
+        "--pose_motion_limb_roi_expand_ratio",
+        type=float,
+        default=1.32,
+        help="Expansion ratio for limb-local ROI tracks."
+    )
+    parser.add_argument(
+        "--pose_motion_hand_roi_expand_ratio",
+        type=float,
+        default=1.75,
+        help="Expansion ratio for hand-local ROI tracks."
+    )
+    parser.add_argument(
+        "--pose_motion_velocity_spike_quantile",
+        type=float,
+        default=0.88,
+        help="Quantile used to classify motion velocity spikes inside the pose motion stack."
+    )
+    parser.add_argument(
+        "--pose_motion_uncertainty_blur_kernel",
+        type=int,
+        default=21,
+        help="Gaussian blur kernel size used to smooth pose motion uncertainty maps."
+    )
+    parser.add_argument(
         "--fps",
         type=int,
         default=30,
@@ -855,6 +910,22 @@ if __name__ == '__main__':
         raise ValueError("face_difficulty_expand_ratio must be >= 1.0.")
     if args.face_alpha_blur_kernel <= 0 or args.face_alpha_blur_kernel % 2 == 0:
         raise ValueError("face_alpha_blur_kernel must be a positive odd integer.")
+    if not 0.0 <= float(args.pose_motion_body_bidirectional_strength) < 1.0:
+        raise ValueError("pose_motion_body_bidirectional_strength must be in [0, 1).")
+    if not 0.0 <= float(args.pose_motion_hand_bidirectional_strength) < 1.0:
+        raise ValueError("pose_motion_hand_bidirectional_strength must be in [0, 1).")
+    if not 0.0 <= float(args.pose_motion_face_bidirectional_strength) < 1.0:
+        raise ValueError("pose_motion_face_bidirectional_strength must be in [0, 1).")
+    if not 0.0 <= float(args.pose_motion_local_refine_strength) < 1.0:
+        raise ValueError("pose_motion_local_refine_strength must be in [0, 1).")
+    if args.pose_motion_limb_roi_expand_ratio <= 1.0:
+        raise ValueError("pose_motion_limb_roi_expand_ratio must be > 1.0.")
+    if args.pose_motion_hand_roi_expand_ratio <= 1.0:
+        raise ValueError("pose_motion_hand_roi_expand_ratio must be > 1.0.")
+    if not 0.5 <= float(args.pose_motion_velocity_spike_quantile) < 1.0:
+        raise ValueError("pose_motion_velocity_spike_quantile must be in [0.5, 1.0).")
+    if args.pose_motion_uncertainty_blur_kernel <= 0 or args.pose_motion_uncertainty_blur_kernel % 2 == 0:
+        raise ValueError("pose_motion_uncertainty_blur_kernel must be a positive odd integer.")
     run_layout = None
     manifest_token = None
     if should_write_manifest(args):
@@ -1000,6 +1071,15 @@ if __name__ == '__main__':
                                             face_difficulty_expand_ratio=args.face_difficulty_expand_ratio,
                                             face_rerun_difficulty_threshold=args.face_rerun_difficulty_threshold,
                                             face_alpha_blur_kernel=args.face_alpha_blur_kernel,
+                                            pose_motion_stack_mode=args.pose_motion_stack_mode,
+                                            pose_motion_body_bidirectional_strength=args.pose_motion_body_bidirectional_strength,
+                                            pose_motion_hand_bidirectional_strength=args.pose_motion_hand_bidirectional_strength,
+                                            pose_motion_face_bidirectional_strength=args.pose_motion_face_bidirectional_strength,
+                                            pose_motion_local_refine_strength=args.pose_motion_local_refine_strength,
+                                            pose_motion_limb_roi_expand_ratio=args.pose_motion_limb_roi_expand_ratio,
+                                            pose_motion_hand_roi_expand_ratio=args.pose_motion_hand_roi_expand_ratio,
+                                            pose_motion_velocity_spike_quantile=args.pose_motion_velocity_spike_quantile,
+                                            pose_motion_uncertainty_blur_kernel=args.pose_motion_uncertainty_blur_kernel,
                                             preprocess_runtime_profile=args.preprocess_runtime_profile,
                                             iterations=args.iterations,
                                             k=args.k,
@@ -1166,6 +1246,18 @@ if __name__ == '__main__':
             "face_rerun_difficulty_threshold": args.face_rerun_difficulty_threshold,
             "face_alpha_blur_kernel": args.face_alpha_blur_kernel,
             "stats": pipeline_outputs.get("face_analysis", {}),
+        }
+        metadata["processing"]["pose_motion_stack"] = {
+            "pose_motion_stack_mode": args.pose_motion_stack_mode,
+            "pose_motion_body_bidirectional_strength": args.pose_motion_body_bidirectional_strength,
+            "pose_motion_hand_bidirectional_strength": args.pose_motion_hand_bidirectional_strength,
+            "pose_motion_face_bidirectional_strength": args.pose_motion_face_bidirectional_strength,
+            "pose_motion_local_refine_strength": args.pose_motion_local_refine_strength,
+            "pose_motion_limb_roi_expand_ratio": args.pose_motion_limb_roi_expand_ratio,
+            "pose_motion_hand_roi_expand_ratio": args.pose_motion_hand_roi_expand_ratio,
+            "pose_motion_velocity_spike_quantile": args.pose_motion_velocity_spike_quantile,
+            "pose_motion_uncertainty_blur_kernel": args.pose_motion_uncertainty_blur_kernel,
+            "stats": pipeline_outputs.get("pose_motion_stack", {}),
         }
         metadata_path = write_preprocess_metadata(args.save_path, metadata)
         runtime_stats_path = None

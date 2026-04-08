@@ -299,10 +299,12 @@ def main():
         "wan/modules/animate/preprocess/preprocess_data.py",
         "wan/modules/animate/preprocess/process_pipepline.py",
         "wan/modules/animate/preprocess/face_analysis.py",
+        "wan/modules/animate/preprocess/pose_motion_analysis.py",
         "wan/modules/animate/preprocess/background_clean_plate.py",
         "wan/modules/animate/preprocess/reference_normalization.py",
         "wan/utils/boundary_refinement.py",
         "scripts/eval/check_face_analysis_stack.py",
+        "scripts/eval/check_pose_motion_stack.py",
         "scripts/eval/check_sam_prompting.py",
         "scripts/eval/check_control_stability.py",
         "scripts/eval/check_boundary_fusion.py",
@@ -323,10 +325,11 @@ def main():
     cases.append(_assert_in_help(generate_help, Path(generate_help["stdout_path"]), ["boundary_refine_mode", "guidance_uncond_mode", "temporal_handoff_mode"]))
 
     preprocess_help = _run_command("preprocess_help", [PYTHON, str(PREPROCESS_SCRIPT), "--help"], suite_dir=suite_dir)
-    cases.append(_assert_in_help(preprocess_help, Path(preprocess_help["stdout_path"]), ["sam_runtime_profile", "bg_inpaint_mode", "reference_normalization_mode", "face_analysis_mode"]))
+    cases.append(_assert_in_help(preprocess_help, Path(preprocess_help["stdout_path"]), ["sam_runtime_profile", "bg_inpaint_mode", "reference_normalization_mode", "face_analysis_mode", "pose_motion_stack_mode"]))
 
     for script_name in [
         "check_face_analysis_stack.py",
+        "check_pose_motion_stack.py",
         "check_sam_prompting.py",
         "check_control_stability.py",
         "check_boundary_fusion.py",

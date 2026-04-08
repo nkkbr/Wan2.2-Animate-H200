@@ -21,6 +21,7 @@ UNCERTAINTY_MAP_SEMANTICS = "uncertainty_map"
 FACE_ALPHA_SEMANTICS = "face_alpha"
 FACE_UNCERTAINTY_SEMANTICS = "face_uncertainty"
 FACE_PARSING_SEMANTICS = "face_parsing_v1"
+POSE_UNCERTAINTY_SEMANTICS = "pose_uncertainty"
 DEFAULT_REFERT_NUM = 5
 
 
@@ -361,6 +362,11 @@ def validate_preprocess_metadata(metadata: dict, src_root_path: str | Path) -> N
                 src_files["face_parsing"].get("label_semantics") == FACE_PARSING_SEMANTICS,
                 "face_parsing artifact semantics mismatch.",
             )
+        if "pose_uncertainty" in src_files:
+            _require(
+                src_files["pose_uncertainty"].get("mask_semantics") == POSE_UNCERTAINTY_SEMANTICS,
+                "pose_uncertainty artifact semantics mismatch.",
+            )
 
     root = Path(src_root_path)
     for name, artifact in src_files.items():
@@ -424,6 +430,11 @@ def resolve_preprocess_artifacts(
                 "face_alpha",
                 "face_parsing",
                 "face_uncertainty",
+                "pose_tracks",
+                "limb_tracks",
+                "hand_tracks",
+                "pose_visibility",
+                "pose_uncertainty",
             }
     }
     return artifacts, metadata
