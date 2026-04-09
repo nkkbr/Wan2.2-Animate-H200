@@ -253,6 +253,7 @@ def build_core_condition_rgb(
     background_rgb: np.ndarray,
     foreground_rgb: np.ndarray | None,
     foreground_alpha: np.ndarray | None,
+    foreground_confidence: np.ndarray | None,
     soft_alpha: np.ndarray | None,
     trimap_unknown: np.ndarray | None,
     hair_alpha: np.ndarray | None,
@@ -260,6 +261,7 @@ def build_core_condition_rgb(
     occlusion_band: np.ndarray | None,
     face_preserve: np.ndarray | None,
     composite_roi_mask: np.ndarray | None,
+    mode: str = "core_rich_v1",
 ) -> dict:
     background_rgb = np.asarray(background_rgb, dtype=np.float32)
     if foreground_rgb is None:
@@ -291,6 +293,7 @@ def build_core_condition_rgb(
     occlusion_band = _mask(occlusion_band)
     face_preserve = _mask(face_preserve)
     composite_roi_mask = _mask(composite_roi_mask)
+    foreground_confidence = _mask(foreground_confidence)
 
     alpha_den = np.clip(foreground_alpha, 1e-3, 1.0)[..., None]
     foreground_unpremul = np.where(
@@ -313,15 +316,32 @@ def build_core_condition_rgb(
         0.0,
         1.0,
     )
-    fg_weight = np.clip(
-        0.02 * soft_alpha
-        + 0.06 * roi * (0.25 + 0.75 * confidence)
-        + 0.04 * hair_alpha
-        + 0.02 * face_preserve,
-        0.0,
-        0.08,
-    )
-    foreground_proxy = 0.55 * foreground_unpremul + 0.45 * background_rgb
+    if mode == "decoupled_v2":
+        confidence = np.clip(
+            0.60 * confidence + 0.40 * foreground_confidence,
+            0.0,
+            1.0,
+        )
+        fg_weight = np.clip(
+            0.08 * soft_alpha
+            + 0.14 * roi * (0.20 + 0.80 * confidence)
+            + 0.06 * hair_alpha
+            + 0.04 * face_preserve
+            + 0.05 * foreground_confidence,
+            0.0,
+            0.18,
+        )
+        foreground_proxy = 0.72 * foreground_unpremul + 0.28 * background_rgb
+    else:
+        fg_weight = np.clip(
+            0.02 * soft_alpha
+            + 0.06 * roi * (0.25 + 0.75 * confidence)
+            + 0.04 * hair_alpha
+            + 0.02 * face_preserve,
+            0.0,
+            0.08,
+        )
+        foreground_proxy = 0.55 * foreground_unpremul + 0.45 * background_rgb
     core_rgb = background_rgb * (1.0 - fg_weight[..., None]) + foreground_proxy * fg_weight[..., None]
     core_rgb = np.clip(core_rgb, 0.0, 255.0).astype(np.uint8)
 
@@ -332,5 +352,6 @@ def build_core_condition_rgb(
             "fg_weight_mean": float(fg_weight.mean()),
             "roi_mean": float(roi.mean()),
             "confidence_mean": float(confidence.mean()),
+            "mode": mode,
         },
     }

@@ -1,0 +1,28 @@
+{
+  "name": "optimization6_step06_tiers",
+  "description": "Fallback H200 orchestration tiers on the current stable legacy route. Because optimization6 has not yet selected a stronger edge route, these tiers differ only in compute budget and conservative generation settings.",
+  "default": {
+    "sample_steps": 20,
+    "sample_solver": "unipc",
+    "frame_num": 21,
+    "refert_num": 5,
+    "replacement_conditioning_mode": "legacy",
+    "boundary_refine_mode": "none"
+  },
+  "high_quality": {
+    "sample_steps": 28,
+    "sample_solver": "unipc",
+    "frame_num": 21,
+    "refert_num": 5,
+    "replacement_conditioning_mode": "legacy",
+    "boundary_refine_mode": "none"
+  },
+  "extreme": {
+    "sample_steps": 36,
+    "sample_solver": "unipc",
+    "frame_num": 21,
+    "refert_num": 5,
+    "replacement_conditioning_mode": "legacy",
+    "boundary_refine_mode": "none"
+  }
+}

@@ -632,8 +632,32 @@ def _parse_args():
         "--matting_mode",
         type=str,
         default="heuristic",
-        choices=["none", "heuristic", "high_precision_v2", "production_v1"],
+        choices=["none", "heuristic", "high_precision_v2", "production_v1", "external_bmv2"],
         help="Matting adapter mode used to derive soft alpha."
+    )
+    parser.add_argument(
+        "--external_alpha_model_id",
+        type=str,
+        default="backgroundmattingv2_mobilenetv2_fp32",
+        help="External alpha model id from docs/optimization6/benchmark/external_model_registry.step02.json."
+    )
+    parser.add_argument(
+        "--external_alpha_blend",
+        type=float,
+        default=0.35,
+        help="Compatibility blend factor used by matting_mode=external_bmv2."
+    )
+    parser.add_argument(
+        "--external_alpha_delta_clip",
+        type=float,
+        default=0.08,
+        help="Maximum per-pixel alpha correction magnitude used by matting_mode=external_bmv2."
+    )
+    parser.add_argument(
+        "--external_alpha_hair_boost",
+        type=float,
+        default=0.12,
+        help="Hair alpha boost used by matting_mode=external_bmv2."
     )
     parser.add_argument(
         "--parsing_head_expand",
@@ -1106,6 +1130,10 @@ if __name__ == '__main__':
                                             matting_trimap_inner_erode=args.matting_trimap_inner_erode,
                                             matting_trimap_outer_dilate=args.matting_trimap_outer_dilate,
                                             matting_blur_kernel=args.matting_blur_kernel,
+                                            external_alpha_model_id=args.external_alpha_model_id,
+                                            external_alpha_blend=args.external_alpha_blend,
+                                            external_alpha_delta_clip=args.external_alpha_delta_clip,
+                                            external_alpha_hair_boost=args.external_alpha_hair_boost,
                                             alpha_v2_detail_boost=args.alpha_v2_detail_boost,
                                             alpha_v2_shrink_strength=args.alpha_v2_shrink_strength,
                                             alpha_v2_hair_boost=args.alpha_v2_hair_boost,
@@ -1288,6 +1316,10 @@ if __name__ == '__main__':
                 "boundary_fusion_mode": args.boundary_fusion_mode,
                 "parsing_mode": args.parsing_mode,
                 "matting_mode": args.matting_mode,
+                "external_alpha_model_id": args.external_alpha_model_id,
+                "external_alpha_blend": args.external_alpha_blend,
+                "external_alpha_delta_clip": args.external_alpha_delta_clip,
+                "external_alpha_hair_boost": args.external_alpha_hair_boost,
                 "parsing_head_expand": args.parsing_head_expand,
                 "parsing_hand_radius_ratio": args.parsing_hand_radius_ratio,
                 "parsing_boundary_kernel": args.parsing_boundary_kernel,

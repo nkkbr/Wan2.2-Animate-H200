@@ -9,6 +9,12 @@ from alpha_refinement import (
 )
 
 
+def _lazy_import_backgroundmattingv2():
+    from external_alpha_backgroundmattingv2 import BackgroundMattingV2Adapter, BackgroundMattingV2Config
+
+    return BackgroundMattingV2Adapter, BackgroundMattingV2Config
+
+
 def _mean_color(frame: np.ndarray, mask: np.ndarray, fallback: np.ndarray) -> np.ndarray:
     pixels = frame[mask > 0]
     if pixels.size == 0:
@@ -131,6 +137,7 @@ def run_matting_adapter(
     *,
     frames: np.ndarray,
     hard_mask: np.ndarray,
+    background_frames: np.ndarray | None = None,
     soft_band: np.ndarray | None = None,
     parsing_boundary_prior: np.ndarray | None = None,
     parsing_head_prior: np.ndarray | None = None,
@@ -138,6 +145,10 @@ def run_matting_adapter(
     parsing_occlusion_prior: np.ndarray | None = None,
     parsing_part_foreground_prior: np.ndarray | None = None,
     mode: str = "heuristic",
+    external_alpha_model_id: str | None = None,
+    external_alpha_blend: float = 0.35,
+    external_alpha_delta_clip: float = 0.08,
+    external_alpha_hair_boost: float = 0.12,
     trimap_inner_erode: int = 3,
     trimap_outer_dilate: int = 12,
     blur_kernel: int = 5,
@@ -177,7 +188,7 @@ def run_matting_adapter(
                 "uncertainty_prior_mean": 0.0,
             },
         }
-    if mode not in {"heuristic", "high_precision_v2", "production_v1"}:
+    if mode not in {"heuristic", "high_precision_v2", "production_v1", "external_bmv2"}:
         raise ValueError(f"Unsupported matting adapter mode: {mode}")
 
     if soft_band is None:
@@ -206,6 +217,110 @@ def run_matting_adapter(
     )
     if mode == "heuristic":
         return heuristic
+
+    if mode == "external_bmv2":
+        if not external_alpha_model_id:
+            raise ValueError("external_alpha_model_id is required when mode=external_bmv2")
+        if background_frames is None:
+            raise ValueError("background_frames is required when mode=external_bmv2")
+        background_frames = np.asarray(background_frames, dtype=np.uint8)
+        if background_frames.shape != frames.shape:
+            raise ValueError(f"background_frames must match frames shape. Got {background_frames.shape} vs {frames.shape}.")
+
+        BackgroundMattingV2Adapter, BackgroundMattingV2Config = _lazy_import_backgroundmattingv2()
+        adapter = BackgroundMattingV2Adapter(BackgroundMattingV2Config(model_id=external_alpha_model_id))
+
+        external_alpha_frames = []
+        external_trimap_unknown_frames = []
+        external_hair_alpha_frames = []
+        external_confidence_frames = []
+        external_provenance_frames = []
+        runtime_values = []
+        source_repo = None
+        release_or_commit = None
+        weight_url = None
+        sha256 = None
+        license_name = None
+
+        for frame, background in zip(frames, background_frames):
+            out = adapter.infer(frame, background)
+            external_alpha_frames.append(out["alpha"].astype(np.float32))
+            external_trimap_unknown_frames.append(out["trimap_unknown"].astype(np.float32))
+            hair_alpha = np.clip(
+                out["hair_alpha"].astype(np.float32) * (1.0 + float(external_alpha_hair_boost)),
+                0.0,
+                1.0,
+            )
+            external_hair_alpha_frames.append(hair_alpha)
+            external_confidence_frames.append(out["alpha_confidence"].astype(np.float32))
+            external_provenance_frames.append(out["alpha_source_provenance"].astype(np.float32))
+            runtime_values.append(float(out["runtime_sec"]))
+            source_repo = out.get("source_repo")
+            release_or_commit = out.get("release_or_commit")
+            weight_url = out.get("weight_url")
+            sha256 = out.get("sha256")
+            license_name = out.get("license")
+
+        external_alpha = np.stack(external_alpha_frames).astype(np.float32)
+        external_trimap_unknown = np.stack(external_trimap_unknown_frames).astype(np.float32)
+        external_hair_alpha = np.stack(external_hair_alpha_frames).astype(np.float32)
+        external_confidence = np.stack(external_confidence_frames).astype(np.float32)
+        external_provenance = np.stack(external_provenance_frames).astype(np.float32)
+
+        compatibility_support = np.clip(
+            0.45 * heuristic["unknown_region"].astype(np.float32)
+            + 0.30 * np.clip(soft_band, 0.0, 1.0).astype(np.float32)
+            + 0.25 * np.clip(parsing_boundary_prior, 0.0, 1.0).astype(np.float32),
+            0.0,
+            1.0,
+        )
+        compatibility_support = np.maximum(compatibility_support, external_trimap_unknown * 0.5).astype(np.float32)
+        compatibility_delta = np.clip(
+            external_alpha - heuristic["soft_alpha"].astype(np.float32),
+            -float(external_alpha_delta_clip),
+            float(external_alpha_delta_clip),
+        ).astype(np.float32)
+        active_soft_alpha = np.clip(
+            heuristic["soft_alpha"].astype(np.float32) + compatibility_delta * compatibility_support * float(external_alpha_blend),
+            0.0,
+            1.0,
+        ).astype(np.float32)
+
+        trimap = heuristic["trimap"].astype(np.float32).copy()
+        trimap = np.where(external_trimap_unknown > 0.5, 0.5, trimap)
+
+        return {
+            "mode": mode,
+            "soft_alpha": active_soft_alpha,
+            "unknown_region": heuristic["unknown_region"].astype(np.float32),
+            "uncertainty_prior": np.maximum(
+                heuristic["uncertainty_prior"].astype(np.float32),
+                external_trimap_unknown.astype(np.float32) * 0.7,
+            ),
+            "support_region": heuristic["support_region"].astype(np.float32),
+            "trimap": trimap,
+            "trimap_unknown": external_trimap_unknown.astype(np.float32),
+            "hair_alpha": external_hair_alpha.astype(np.float32),
+            "alpha_confidence": external_confidence.astype(np.float32),
+            "alpha_source_provenance": external_provenance.astype(np.float32),
+            "alpha_v3": external_alpha.astype(np.float32),
+            "stats": {
+                **heuristic["stats"],
+                "mode": mode,
+                "external_alpha_model_id": external_alpha_model_id,
+                "external_alpha_source_repo": source_repo,
+                "external_alpha_release": release_or_commit,
+                "external_alpha_weight_url": weight_url,
+                "external_alpha_sha256": sha256,
+                "external_alpha_license": license_name,
+                "external_alpha_runtime_sec_mean": float(np.mean(runtime_values)) if runtime_values else 0.0,
+                "external_alpha_mean": float(external_alpha.mean()),
+                "external_trimap_unknown_mean": float(external_trimap_unknown.mean()),
+                "external_hair_alpha_mean": float(external_hair_alpha.mean()),
+                "active_soft_alpha_mean": float(active_soft_alpha.mean()),
+                "active_soft_alpha_delta_mean": float(np.abs(active_soft_alpha - heuristic["soft_alpha"].astype(np.float32)).mean()),
+            },
+        }
 
     alpha_v2 = run_alpha_refinement_v2(
         frames=frames,

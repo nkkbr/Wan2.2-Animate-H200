@@ -1,0 +1,67 @@
+{
+  "registry_version": "optimization6_step02_v1",
+  "models": [
+    {
+      "model_id": "backgroundmattingv2_mobilenetv2_fp32",
+      "task_type": "background_matting_with_clean_plate",
+      "source_repo": "https://github.com/PeterL1n/BackgroundMattingV2",
+      "release_or_commit": "v1.0.0",
+      "license": "MIT",
+      "weight_url": "https://github.com/PeterL1n/BackgroundMattingV2/releases/download/v1.0.0/torchscript_mobilenetv2_fp32.pth",
+      "sha256": "6d449e8a0445438491cf07c03a6e86f21df2b3aa2dc630d9430347fcb807aae4",
+      "required_dependencies": [
+        "torch"
+      ],
+      "input_semantics": {
+        "src_rgb": "foreground source frame normalized to [0,1]",
+        "bgr_rgb": "matched clean plate background normalized to [0,1]"
+      },
+      "output_semantics": {
+        "alpha": "foreground alpha matte in [0,1]",
+        "fgr": "foreground rgb in [0,1]"
+      },
+      "status": "best_of_three_failed_gate"
+    },
+    {
+      "model_id": "backgroundmattingv2_resnet50_fp32",
+      "task_type": "background_matting_with_clean_plate",
+      "source_repo": "https://github.com/PeterL1n/BackgroundMattingV2",
+      "release_or_commit": "v1.0.0",
+      "license": "MIT",
+      "weight_url": "https://github.com/PeterL1n/BackgroundMattingV2/releases/download/v1.0.0/torchscript_resnet50_fp32.pth",
+      "sha256": "c22fe27f627c04122cd44a3476315eb2fcb06a8d8ff2803ac610c1dd6d4de2a7",
+      "required_dependencies": [
+        "torch"
+      ],
+      "input_semantics": {
+        "src_rgb": "foreground source frame normalized to [0,1]",
+        "bgr_rgb": "matched clean plate background normalized to [0,1]"
+      },
+      "output_semantics": {
+        "alpha": "foreground alpha matte in [0,1]",
+        "fgr": "foreground rgb in [0,1]"
+      },
+      "status": "evaluated_failed_gate"
+    },
+    {
+      "model_id": "modnet_webcam_portrait_matting",
+      "task_type": "portrait_matting",
+      "source_repo": "https://github.com/ZHKKKe/MODNet",
+      "release_or_commit": "master",
+      "license": "Apache-2.0",
+      "weight_url": "https://drive.google.com/file/d/1Nf1ZxeJZJL8Qx9KadcYYyEmmlKhTADxX/view?usp=sharing",
+      "sha256": null,
+      "required_dependencies": [
+        "torch",
+        "gdown"
+      ],
+      "input_semantics": {
+        "src_rgb": "portrait frame normalized to [0,1]"
+      },
+      "output_semantics": {
+        "alpha": "portrait alpha matte in [0,1]"
+      },
+      "status": "pending_weight_hash_lock"
+    }
+  ]
+}

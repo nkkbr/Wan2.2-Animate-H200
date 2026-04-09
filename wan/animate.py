@@ -708,6 +708,23 @@ class WanAnimate:
                     trimap_unknown_map = torch.clamp(0.35 * composite_roi_mask, 0.0, 1.0)
                 if edge_detail_map is None:
                     edge_detail_map = torch.clamp(0.20 * composite_roi_mask, 0.0, 1.0)
+        elif conditioning_mode == "decoupled_v2":
+            if composite_roi_mask is not None:
+                decoupled_release_hint = torch.clamp(0.45 * composite_roi_mask, 0.0, 1.0)
+                detail_release_map = (
+                    torch.maximum(detail_release_map, decoupled_release_hint)
+                    if detail_release_map is not None else decoupled_release_hint
+                )
+                trimap_hint = torch.clamp(0.55 * composite_roi_mask, 0.0, 1.0)
+                edge_hint = torch.clamp(0.35 * composite_roi_mask, 0.0, 1.0)
+                trimap_unknown_map = (
+                    torch.maximum(trimap_unknown_map, trimap_hint)
+                    if trimap_unknown_map is not None else trimap_hint
+                )
+                edge_detail_map = (
+                    torch.maximum(edge_detail_map, edge_hint)
+                    if edge_detail_map is not None else edge_hint
+                )
         background_keep = compose_background_keep_mask(
             hard_foreground,
             soft_band=boundary_band,
@@ -1126,13 +1143,13 @@ class WanAnimate:
             raise ValueError(
                 f"temporal_handoff_strength must be in [0, 1]. Got {temporal_handoff_strength}."
             )
-        if replacement_conditioning_mode not in {"legacy", "rich", "rich_v1", "semantic_v1", "decoupled_v1", "core_rich_v1"}:
+        if replacement_conditioning_mode not in {"legacy", "rich", "rich_v1", "semantic_v1", "decoupled_v1", "decoupled_v2", "core_rich_v1"}:
             raise ValueError(
                 f"Unsupported replacement_conditioning_mode: {replacement_conditioning_mode}"
             )
         if replacement_conditioning_mode == "rich":
             replacement_conditioning_mode = "rich_v1"
-        if boundary_refine_mode not in {"none", "deterministic", "v2", "roi_v1", "semantic_v1", "semantic_experts_v1", "local_edge_v1", "roi_gen_v1"}:
+        if boundary_refine_mode not in {"none", "deterministic", "v2", "roi_v1", "semantic_v1", "semantic_experts_v1", "local_edge_v1", "roi_gen_v1", "roi_gen_v2"}:
             raise ValueError(f"Unsupported boundary_refine_mode: {boundary_refine_mode}")
         if not 0.0 <= float(boundary_refine_strength) <= 1.0:
             raise ValueError(f"boundary_refine_strength must be in [0, 1]. Got {boundary_refine_strength}.")
@@ -1597,11 +1614,12 @@ class WanAnimate:
                 replacement_masks=replacement_masks,
                 real_frame_len=real_frame_len,
             )
-            if replacement_conditioning_mode == "core_rich_v1" and bg_images is not None:
+            if replacement_conditioning_mode in {"core_rich_v1", "decoupled_v2"} and bg_images is not None:
                 core_conditioning = build_core_condition_rgb(
                     background_rgb=np.asarray(bg_images),
                     foreground_rgb=np.asarray(foreground_rgb_images) if foreground_rgb_images is not None else None,
                     foreground_alpha=np.asarray(foreground_alpha_images) if foreground_alpha_images is not None else None,
+                    foreground_confidence=np.asarray(foreground_confidence_images) if foreground_confidence_images is not None else None,
                     soft_alpha=replacement_masks["soft_alpha"][: len(bg_images)].cpu().numpy() if replacement_masks["soft_alpha"] is not None else None,
                     trimap_unknown=replacement_masks["trimap_unknown_map"][: len(bg_images)].cpu().numpy() if replacement_masks["trimap_unknown_map"] is not None else None,
                     hair_alpha=np.asarray(hair_edge_mask_images) if hair_edge_mask_images is not None else None,
@@ -1609,6 +1627,7 @@ class WanAnimate:
                     occlusion_band=replacement_masks["occlusion_band"][: len(bg_images)].cpu().numpy() if replacement_masks["occlusion_band"] is not None else None,
                     face_preserve=replacement_masks["face_preserve_map"][: len(bg_images)].cpu().numpy() if replacement_masks["face_preserve_map"] is not None else None,
                     composite_roi_mask=replacement_masks["composite_roi_mask"][: len(bg_images)].cpu().numpy() if replacement_masks["composite_roi_mask"] is not None else None,
+                    mode=replacement_conditioning_mode,
                 )
                 core_condition_rgb_images = self.inputs_padding(core_conditioning["core_condition_rgb"], target_len)
                 core_conditioning_summary = core_conditioning["summary"]

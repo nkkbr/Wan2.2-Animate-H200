@@ -68,7 +68,7 @@ def compose_background_keep_mask(
     background_keep = 1.0 - torch.clamp(person_mask, 0.0, 1.0)
     if mode == "hard":
         return torch.clamp(background_keep, 0.0, 1.0)
-    if conditioning_mode not in {"legacy", "rich", "rich_v1", "semantic_v1", "decoupled_v1", "core_rich_v1"}:
+    if conditioning_mode not in {"legacy", "rich", "rich_v1", "semantic_v1", "decoupled_v1", "decoupled_v2", "core_rich_v1"}:
         raise ValueError(f"Unsupported replacement conditioning mode: {conditioning_mode}")
 
     def _to_tensor(value):
@@ -111,7 +111,7 @@ def compose_background_keep_mask(
             background_keep = background_keep * (
                 1.0 - 0.75 * torch.clamp(unresolved_region.to(dtype=torch.float32, device=background_keep.device), 0.0, 1.0)
             )
-        if conditioning_mode in {"rich", "rich_v1", "semantic_v1", "decoupled_v1", "core_rich_v1"}:
+        if conditioning_mode in {"rich", "rich_v1", "semantic_v1", "decoupled_v1", "decoupled_v2", "core_rich_v1"}:
             if uncertainty_map is not None:
                 if not isinstance(uncertainty_map, torch.Tensor):
                     uncertainty_map = torch.as_tensor(uncertainty_map, dtype=torch.float32)
@@ -155,14 +155,15 @@ def compose_background_keep_mask(
                         0.0,
                         1.0,
                     )
-            if conditioning_mode == "decoupled_v1":
+            if conditioning_mode in {"decoupled_v1", "decoupled_v2"}:
                 release_mask = composite_roi_mask if composite_roi_mask is not None else soft_band
                 if release_mask is not None:
                     confidence_gate = foreground_confidence if foreground_confidence is not None else background_confidence
                     if confidence_gate is None:
                         confidence_gate = torch.ones_like(release_mask, dtype=torch.float32)
+                    strength_factor = 0.10 if conditioning_mode == "decoupled_v1" else 0.18
                     release_strength = torch.clamp(
-                        0.10
+                        strength_factor
                         * float(np.clip(decoupled_release_strength, 0.0, 1.0))
                         * release_mask
                         * (0.25 + 0.75 * (1.0 - confidence_gate)),
@@ -197,7 +198,7 @@ def compose_background_keep_mask(
         soft_band = torch.as_tensor(soft_band, dtype=torch.float32)
     soft_band = soft_band.to(dtype=torch.float32, device=background_keep.device)
     boundary_strength = max(0.0, min(float(boundary_strength), 1.0))
-    if conditioning_mode in {"rich", "rich_v1", "semantic_v1", "decoupled_v1", "core_rich_v1"}:
+    if conditioning_mode in {"rich", "rich_v1", "semantic_v1", "decoupled_v1", "decoupled_v2", "core_rich_v1"}:
         if uncertainty_map is not None:
             if not isinstance(uncertainty_map, torch.Tensor):
                 uncertainty_map = torch.as_tensor(uncertainty_map, dtype=torch.float32)
@@ -240,15 +241,16 @@ def compose_background_keep_mask(
             if occluded_boundary is not None:
                 semantic_release = semantic_release - 0.24 * occluded_boundary
             boundary_strength = torch.clamp(boundary_strength * (1.0 + semantic_release), 0.0, 1.25)
-        if conditioning_mode == "decoupled_v1":
+        if conditioning_mode in {"decoupled_v1", "decoupled_v2"}:
             release_mask = composite_roi_mask if composite_roi_mask is not None else trimap_unknown_map
             if release_mask is not None:
                 confidence_gate = foreground_confidence if foreground_confidence is not None else face_confidence if face_confidence is not None else None
                 if confidence_gate is None:
                     confidence_gate = torch.ones_like(release_mask, dtype=torch.float32)
+                base_strength = 0.10 if conditioning_mode == "decoupled_v1" else 0.18
                 background_keep = background_keep * (
                     1.0
-                    - 0.10
+                    - base_strength
                     * float(np.clip(decoupled_release_strength, 0.0, 1.0))
                     * release_mask
                     * (0.25 + 0.75 * (1.0 - confidence_gate))

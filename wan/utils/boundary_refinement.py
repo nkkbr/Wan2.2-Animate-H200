@@ -478,7 +478,7 @@ def refine_boundary_frames(
         else np.clip(person_mask + outer_band, 0.0, 1.0)[..., None]
     )
 
-    if mode not in {"deterministic", "v2", "roi_v1", "semantic_v1", "semantic_experts_v1", "local_edge_v1", "roi_gen_v1"}:
+    if mode not in {"deterministic", "v2", "roi_v1", "semantic_v1", "semantic_experts_v1", "local_edge_v1", "roi_gen_v1", "roi_gen_v2"}:
         raise ValueError(f"Unsupported boundary refinement mode: {mode}")
 
     if mode == "semantic_experts_v1":
@@ -560,7 +560,7 @@ def refine_boundary_frames(
             sharpen_sigma=sharpen_sigma,
         )
 
-    if mode in {"roi_v1", "local_edge_v1", "roi_gen_v1"}:
+    if mode in {"roi_v1", "local_edge_v1", "roi_gen_v1", "roi_gen_v2"}:
         background_confidence_local = (
             np.ones_like(person_mask, dtype=np.float32)
             if background_confidence is None else np.clip(np.asarray(background_confidence, dtype=np.float32), 0.0, 1.0)
@@ -640,6 +640,8 @@ def refine_boundary_frames(
             if crop_w <= 1 or crop_h <= 1:
                 continue
             scale = 2.1 if max(crop_w, crop_h) <= 256 else 1.6
+            if mode == "roi_gen_v2":
+                scale = 1.55 if max(crop_w, crop_h) <= 256 else 1.35
             roi_scale_values.append(float(scale))
             target_size = (max(32, int(round(crop_w * scale))), max(32, int(round(crop_h * scale))))
 
@@ -679,14 +681,14 @@ def refine_boundary_frames(
                 occlusion_band=crop_occlusion_band,
                 face_preserve_map=crop_face_preserve,
                 face_confidence_map=crop_face_confidence,
-                detail_release_map=crop_detail_release if mode == "local_edge_v1" else None,
-                trimap_unknown_map=crop_trimap_unknown if mode == "local_edge_v1" else None,
-                edge_detail_map=crop_edge_detail if mode == "local_edge_v1" else None,
-                face_boundary_map=crop_face_boundary if mode in {"local_edge_v1", "roi_gen_v1"} else None,
-                hair_boundary_map=crop_hair_boundary if mode in {"local_edge_v1", "roi_gen_v1"} else None,
-                hand_boundary_map=crop_hand_boundary if mode in {"local_edge_v1", "roi_gen_v1"} else None,
-                cloth_boundary_map=crop_cloth_boundary if mode in {"local_edge_v1", "roi_gen_v1"} else None,
-                occluded_boundary_map=crop_occluded_boundary if mode in {"local_edge_v1", "roi_gen_v1"} else None,
+                detail_release_map=crop_detail_release if mode in {"local_edge_v1", "roi_gen_v1", "roi_gen_v2"} else None,
+                trimap_unknown_map=crop_trimap_unknown if mode in {"local_edge_v1", "roi_gen_v1", "roi_gen_v2"} else None,
+                edge_detail_map=crop_edge_detail if mode in {"local_edge_v1", "roi_gen_v1", "roi_gen_v2"} else None,
+                face_boundary_map=crop_face_boundary if mode in {"local_edge_v1", "roi_gen_v1", "roi_gen_v2"} else None,
+                hair_boundary_map=crop_hair_boundary if mode in {"local_edge_v1", "roi_gen_v1", "roi_gen_v2"} else None,
+                hand_boundary_map=crop_hand_boundary if mode in {"local_edge_v1", "roi_gen_v1", "roi_gen_v2"} else None,
+                cloth_boundary_map=crop_cloth_boundary if mode in {"local_edge_v1", "roi_gen_v1", "roi_gen_v2"} else None,
+                occluded_boundary_map=crop_occluded_boundary if mode in {"local_edge_v1", "roi_gen_v1", "roi_gen_v2"} else None,
                 structure_guard_strength=structure_guard_strength,
                 mode="semantic_v1",
                 strength=min(1.0, strength + 0.14),
@@ -697,7 +699,7 @@ def refine_boundary_frames(
             crop_refined = crop_refined[0].astype(np.float32) / 255.0
             crop_generated_float = crop_generated[0].astype(np.float32) / 255.0
 
-            if mode in {"local_edge_v1", "roi_gen_v1"}:
+            if mode in {"local_edge_v1", "roi_gen_v1", "roi_gen_v2"}:
                 crop_refined, local_edge_debug = restore_local_edge_roi(
                     original_rgb=crop_generated_float,
                     refined_rgb=crop_refined,
@@ -732,12 +734,12 @@ def refine_boundary_frames(
                     local_edge_feather_full,
                 )
 
-            if mode == "roi_gen_v1":
+            if mode in {"roi_gen_v1", "roi_gen_v2"}:
                 crop_background_float = crop_background[0].astype(np.float32) / 255.0
                 crop_outer_band = crop_soft_band[0].astype(np.float32)
                 crop_inner_band = build_inner_boundary_band(crop_person_mask, inner_width=max(inner_width, 2))[0]
-                candidate_specs = [
-                    ("base", crop_refined.astype(np.float32)),
+                candidate_specs = [("base", crop_refined.astype(np.float32))]
+                candidate_specs.append(
                     (
                         "detail_mid",
                         restore_local_edge_roi(
@@ -756,34 +758,15 @@ def refine_boundary_frames(
                             occluded_boundary_map=crop_occluded_boundary[0],
                             sharpen=min(1.0, sharpen + 0.12),
                             detail_strength=min(1.0, strength + 0.12),
-                            scale_factor=2.2 if max(crop_w, crop_h) <= 280 else 1.8,
+                            scale_factor=1.9 if mode == "roi_gen_v1" else 1.45,
                         )[0].astype(np.float32),
-                    ),
-                    (
-                        "detail_high",
-                        restore_local_edge_roi(
-                            original_rgb=crop_generated_float,
-                            refined_rgb=crop_refined.astype(np.float32),
-                            soft_alpha=crop_soft_alpha[0] if crop_soft_alpha is not None else crop_person_mask[0],
-                            outer_band=crop_outer_band,
-                            uncertainty_map=crop_uncertainty_map[0],
-                            detail_release_map=crop_detail_release[0],
-                            trimap_unknown_map=crop_trimap_unknown[0],
-                            edge_detail_map=crop_edge_detail[0],
-                            face_boundary_map=crop_face_boundary[0],
-                            hair_boundary_map=crop_hair_boundary[0],
-                            hand_boundary_map=crop_hand_boundary[0],
-                            cloth_boundary_map=crop_cloth_boundary[0],
-                            occluded_boundary_map=crop_occluded_boundary[0],
-                            sharpen=min(1.0, sharpen + 0.18),
-                            detail_strength=min(1.0, strength + 0.20),
-                            scale_factor=2.5 if max(crop_w, crop_h) <= 280 else 2.0,
-                        )[0].astype(np.float32),
-                    ),
-                    (
-                        "contrast_high",
-                        np.clip(
-                            apply_unsharp_mask(
+                    )
+                )
+                if mode == "roi_gen_v1":
+                    candidate_specs.extend(
+                        [
+                            (
+                                "detail_high",
                                 restore_local_edge_roi(
                                     original_rgb=crop_generated_float,
                                     refined_rgb=crop_refined.astype(np.float32),
@@ -798,18 +781,120 @@ def refine_boundary_frames(
                                     hand_boundary_map=crop_hand_boundary[0],
                                     cloth_boundary_map=crop_cloth_boundary[0],
                                     occluded_boundary_map=crop_occluded_boundary[0],
-                                    sharpen=min(1.0, sharpen + 0.22),
-                                    detail_strength=min(1.0, strength + 0.26),
-                                    scale_factor=2.6 if max(crop_w, crop_h) <= 280 else 2.1,
-                                )[0][None],
-                                sigma=max(0.7, sharpen_sigma * 0.8),
-                                amount=min(1.0, sharpen + 0.28),
-                            )[0],
-                            0.0,
-                            1.0,
-                        ).astype(np.float32),
-                    ),
-                ]
+                                    sharpen=min(1.0, sharpen + 0.18),
+                                    detail_strength=min(1.0, strength + 0.20),
+                                    scale_factor=2.5 if max(crop_w, crop_h) <= 280 else 2.0,
+                                )[0].astype(np.float32),
+                            ),
+                            (
+                                "contrast_high",
+                                np.clip(
+                                    apply_unsharp_mask(
+                                        restore_local_edge_roi(
+                                            original_rgb=crop_generated_float,
+                                            refined_rgb=crop_refined.astype(np.float32),
+                                            soft_alpha=crop_soft_alpha[0] if crop_soft_alpha is not None else crop_person_mask[0],
+                                            outer_band=crop_outer_band,
+                                            uncertainty_map=crop_uncertainty_map[0],
+                                            detail_release_map=crop_detail_release[0],
+                                            trimap_unknown_map=crop_trimap_unknown[0],
+                                            edge_detail_map=crop_edge_detail[0],
+                                            face_boundary_map=crop_face_boundary[0],
+                                            hair_boundary_map=crop_hair_boundary[0],
+                                            hand_boundary_map=crop_hand_boundary[0],
+                                            cloth_boundary_map=crop_cloth_boundary[0],
+                                            occluded_boundary_map=crop_occluded_boundary[0],
+                                            sharpen=min(1.0, sharpen + 0.22),
+                                            detail_strength=min(1.0, strength + 0.26),
+                                            scale_factor=2.6 if max(crop_w, crop_h) <= 280 else 2.1,
+                                        )[0][None],
+                                        sigma=max(0.7, sharpen_sigma * 0.8),
+                                        amount=min(1.0, sharpen + 0.28),
+                                    )[0],
+                                    0.0,
+                                    1.0,
+                                ).astype(np.float32),
+                            ),
+                        ]
+                    )
+                if mode == "roi_gen_v2":
+                    crop_generated_sharp = apply_unsharp_mask(
+                        crop_generated_float[None],
+                        sigma=max(0.6, sharpen_sigma * 0.7),
+                        amount=min(1.0, sharpen + 0.38),
+                    )[0]
+                    crop_refined_sharp = apply_unsharp_mask(
+                        crop_refined[None].astype(np.float32),
+                        sigma=max(0.6, sharpen_sigma * 0.7),
+                        amount=min(1.0, sharpen + 0.26),
+                    )[0]
+                    crop_edge_focus = np.clip(
+                        np.maximum.reduce(
+                            [
+                                crop_outer_band,
+                                0.85 * crop_detail_release[0],
+                                0.70 * crop_trimap_unknown[0],
+                                0.90 * crop_hair_boundary[0],
+                                0.68 * crop_hand_boundary[0],
+                                0.64 * crop_cloth_boundary[0],
+                                0.40 * crop_face_boundary[0],
+                            ]
+                        ) * (1.0 - 0.40 * crop_uncertainty_map[0]) * (1.0 - 0.45 * crop_occluded_boundary[0]),
+                        0.0,
+                        1.0,
+                    ).astype(np.float32)
+                    crop_target_alpha = (
+                        crop_soft_alpha[0].astype(np.float32)
+                        if crop_soft_alpha is not None else np.clip(crop_person_mask[0] + crop_outer_band, 0.0, 1.0).astype(np.float32)
+                    )
+                    foreground_residual = np.clip(crop_generated_sharp - crop_background_float, -0.35, 0.35).astype(np.float32)
+                    alpha_restore = np.clip(
+                        crop_refined.astype(np.float32)
+                        + crop_edge_focus[..., None]
+                        * (
+                            0.42 * foreground_residual
+                            + 0.30 * (crop_generated_sharp - crop_generated_float)
+                            + 0.18 * (crop_refined_sharp - crop_refined)
+                        ),
+                        0.0,
+                        1.0,
+                    ).astype(np.float32)
+                    alpha_composite = np.clip(
+                        crop_background_float * (1.0 - crop_target_alpha[..., None])
+                        + alpha_restore * crop_target_alpha[..., None],
+                        0.0,
+                        1.0,
+                    ).astype(np.float32)
+                    semantic_focus = np.clip(
+                        np.maximum.reduce(
+                            [
+                                1.15 * crop_hair_boundary[0],
+                                0.88 * crop_hand_boundary[0],
+                                0.82 * crop_cloth_boundary[0],
+                                0.54 * crop_face_boundary[0],
+                                0.30 * crop_detail_release[0],
+                            ]
+                        ),
+                        0.0,
+                        1.0,
+                    ).astype(np.float32)
+                    semantic_enhanced = np.clip(
+                        crop_refined.astype(np.float32)
+                        + semantic_focus[..., None]
+                        * (
+                            0.36 * (crop_generated_sharp - crop_generated_float)
+                            + 0.24 * (crop_refined_sharp - crop_refined)
+                        ),
+                        0.0,
+                        1.0,
+                    ).astype(np.float32)
+                    candidate_specs.extend(
+                        [
+                            ("alpha_restore", alpha_restore),
+                            ("alpha_composite", alpha_composite),
+                            ("semantic_enhanced", semantic_enhanced),
+                        ]
+                    )
                 scored = []
                 for candidate_name, candidate_rgb in candidate_specs:
                     candidate_score, candidate_metrics = _score_roi_candidate(
@@ -819,6 +904,12 @@ def refine_boundary_frames(
                         outer_band=crop_outer_band,
                         inner_band=crop_inner_band,
                     )
+                    if mode == "roi_gen_v2":
+                        candidate_score += (
+                            0.45 * float(candidate_metrics["band_gradient_after_mean"])
+                            + 0.60 * float(candidate_metrics["band_edge_contrast_after_mean"])
+                            - 0.35 * float(candidate_metrics["band_mad_mean"])
+                        )
                     scored.append((candidate_score, candidate_name, candidate_rgb, candidate_metrics))
                 scored.sort(key=lambda item: item[0], reverse=True)
                 crop_refined = scored[0][2]
