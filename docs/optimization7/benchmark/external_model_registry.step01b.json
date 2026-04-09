@@ -1,0 +1,87 @@
+{
+  "registry_version": "optimization7_step01b_v1",
+  "models": [
+    {
+      "model_id": "backgroundmattingv2_mobilenetv2_fp32",
+      "task_type": "background_matting_with_clean_plate",
+      "source_repo": "https://github.com/PeterL1n/BackgroundMattingV2",
+      "release_or_commit": "v1.0.0",
+      "license": "MIT",
+      "weight_url": "https://github.com/PeterL1n/BackgroundMattingV2/releases/download/v1.0.0/torchscript_mobilenetv2_fp32.pth",
+      "sha256": "6d449e8a0445438491cf07c03a6e86f21df2b3aa2dc630d9430347fcb807aae4",
+      "required_dependencies": ["torch"],
+      "status": "rejected_step01"
+    },
+    {
+      "model_id": "backgroundmattingv2_resnet50_fp32",
+      "task_type": "background_matting_with_clean_plate",
+      "source_repo": "https://github.com/PeterL1n/BackgroundMattingV2",
+      "release_or_commit": "v1.0.0",
+      "license": "MIT",
+      "weight_url": "https://github.com/PeterL1n/BackgroundMattingV2/releases/download/v1.0.0/torchscript_resnet50_fp32.pth",
+      "sha256": "c22fe27f627c04122cd44a3476315eb2fcb06a8d8ff2803ac610c1dd6d4de2a7",
+      "required_dependencies": ["torch"],
+      "status": "rejected_step01"
+    },
+    {
+      "model_id": "rvm_mobilenetv3_fp32_torchscript",
+      "task_type": "video_matting",
+      "source_repo": "https://github.com/PeterL1n/RobustVideoMatting",
+      "release_or_commit": "v1.0.0",
+      "license": "GPL-3.0",
+      "weight_url": "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3_fp32.torchscript",
+      "sha256": "f01e0c9338b9a6a31b881ea6d4360d70c1e549701b3792e14c9ed88d6196c5a1",
+      "required_dependencies": ["torch"],
+      "status": "rejected_step01"
+    },
+    {
+      "model_id": "matanyone_v1_official",
+      "task_type": "video_matting_with_first_frame_mask",
+      "source_repo": "https://github.com/pq-yang/MatAnyone",
+      "release_or_commit": "v1.0.0",
+      "license": "S-Lab License 1.0",
+      "weight_url": "https://github.com/pq-yang/MatAnyone/releases/download/v1.0.0/matanyone.pth",
+      "sha256": "dd26b991d020ed5eb4be50996f97354c45cfdfc0f59958e8983ac6a198f4809d",
+      "required_dependencies": ["torch", "torchvision", "hydra-core", "omegaconf", "matanyone"],
+      "input_semantics": {
+        "src_rgb": "sequence frame normalized to [0,1]",
+        "initial_mask": "first-frame target mask in [0,255]"
+      },
+      "output_semantics": {
+        "soft_alpha_ext": "foreground alpha matte in [0,1]",
+        "trimap_unknown_ext": "unknown trimap support in [0,1]",
+        "hair_alpha_ext": "hair-focused matte prior in [0,1]",
+        "alpha_confidence_ext": "confidence proxy in [0,1]",
+        "alpha_source_provenance_ext": "per-pixel provenance strength in [0,1]"
+      },
+      "adapter_kwargs": {
+        "warmup_frames": 10
+      },
+      "promotion_notes": [
+        "quality must pass reviewed gate before any mainline integration",
+        "license review required before production promotion"
+      ],
+      "status": "benchmarked_step01b_failed_gate"
+    },
+    {
+      "model_id": "modnet_portrait_video_planned",
+      "task_type": "planned",
+      "source_repo": "https://github.com/ZHKKKe/MODNet",
+      "release_or_commit": "main",
+      "license": "Apache-2.0",
+      "weight_url": "https://drive.google.com/file/d/1Nf1ZxeJZJL8Qx9KadcYYyEmmlKhTADxX/view?usp=sharing",
+      "required_dependencies": ["torch", "gdown"],
+      "status": "planned"
+    },
+    {
+      "model_id": "matte_anything_planned",
+      "task_type": "planned",
+      "source_repo": "https://github.com/hustvl/Matte-Anything",
+      "release_or_commit": "main",
+      "license": "MIT",
+      "weight_url": "google-drive-multiple-checkpoints",
+      "required_dependencies": ["torch", "segment-anything", "groundingdino"],
+      "status": "planned"
+    }
+  ]
+}
