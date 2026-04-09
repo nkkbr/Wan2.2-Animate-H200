@@ -1,0 +1,28 @@
+{
+  "manifest_name": "optimization8_step01_reviewed_edge_benchmark_v3",
+  "seed_reviewed_dataset_dir": "/home/user1/wan2.2_20260407/Wan2.2/runs/optimization6_step01_round1/reviewed_edge_benchmark_v2",
+  "cases": [
+    {
+      "case_id": "replacement_short10s_reviewed_v3",
+      "video_path": "/home/user1/wan2.2/test1/260306_01_step_1_0000_0010.mp4",
+      "primary_preprocess_dir": "/home/user1/wan2.2_20260407/Wan2.2/runs/optimization3_step06_round5_ab/preprocess_video_v2/preprocess",
+      "consensus_preprocess_dirs": [
+        "/home/user1/wan2.2_20260407/Wan2.2/runs/optimization3_step06_round5_ab/preprocess_video_v2/preprocess",
+        "/home/user1/wan2.2_20260407/Wan2.2/runs/optimization5_step02_round3/preprocess",
+        "/home/user1/wan2.2_20260407/Wan2.2/runs/optimization4_step06_round1_preprocess/preprocess",
+        "/home/user1/wan2.2_20260407/Wan2.2/runs/optimization3_step08_round3_stability/repeat_01/face_focus_highres/preprocess"
+      ],
+      "baseline_prediction_preprocess_dir": "/home/user1/wan2.2_20260407/Wan2.2/runs/optimization3_step06_round5_ab/preprocess_video_v2/preprocess",
+      "target_keyframe_count": 48,
+      "minimum_strong_revision_fraction": 0.30,
+      "minimum_category_coverage": {
+        "face": 36,
+        "hair": 36,
+        "hand": 20,
+        "cloth": 36,
+        "occluded": 20,
+        "semi_transparent": 12
+      }
+    }
+  ]
+}

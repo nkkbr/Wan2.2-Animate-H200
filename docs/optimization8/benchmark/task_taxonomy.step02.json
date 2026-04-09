@@ -1,0 +1,122 @@
+{
+  "taxonomy_name": "optimization8_step02_roi_training_tasks_v2",
+  "version": "v2",
+  "tasks": [
+    {
+      "task_type": "alpha_refinement",
+      "description": "Refine coarse soft alpha around a boundary ROI while preserving stable foreground interior and background exterior.",
+      "required_inputs": [
+        "foreground_patch",
+        "background_patch",
+        "input_soft_alpha",
+        "input_trimap_unknown",
+        "input_boundary_roi_mask",
+        "input_boundary_band",
+        "input_uncertainty"
+      ],
+      "required_targets": [
+        "gt_soft_alpha",
+        "gt_boundary_mask"
+      ],
+      "primary_metrics": [
+        "boundary_f1",
+        "alpha_mae",
+        "trimap_error"
+      ]
+    },
+    {
+      "task_type": "matte_completion",
+      "description": "Complete matte values inside uncertain / unknown trimap regions where the coarse alpha is ambiguous.",
+      "required_inputs": [
+        "foreground_patch",
+        "background_patch",
+        "input_soft_alpha",
+        "input_trimap_unknown",
+        "input_boundary_roi_mask"
+      ],
+      "required_targets": [
+        "gt_soft_alpha",
+        "gt_trimap_unknown",
+        "gt_semi_transparent"
+      ],
+      "primary_metrics": [
+        "alpha_mae",
+        "trimap_error",
+        "semi_transparent_boundary_f1"
+      ]
+    },
+    {
+      "task_type": "boundary_uncertainty_refinement",
+      "description": "Refine uncertainty-sensitive boundary regions where model disagreement or trimap ambiguity is highest.",
+      "required_inputs": [
+        "foreground_patch",
+        "background_patch",
+        "input_soft_alpha",
+        "input_boundary_band",
+        "input_uncertainty"
+      ],
+      "required_targets": [
+        "gt_boundary_mask",
+        "gt_occlusion_band",
+        "gt_trimap_unknown"
+      ],
+      "primary_metrics": [
+        "boundary_f1",
+        "trimap_error",
+        "occluded_boundary_f1"
+      ]
+    },
+    {
+      "task_type": "semantic_boundary_expert",
+      "description": "Specialize on a single semantic boundary family such as face, hair, hand, cloth, occluded, or semi-transparent edges.",
+      "required_inputs": [
+        "foreground_patch",
+        "background_patch",
+        "input_soft_alpha",
+        "input_boundary_roi_mask"
+      ],
+      "required_targets": [
+        "gt_boundary_mask",
+        "semantic_target_mask"
+      ],
+      "primary_metrics": [
+        "semantic_boundary_f1"
+      ]
+    },
+    {
+      "task_type": "compositing_aware_edge_correction",
+      "description": "Correct boundary errors that are likely to survive compositing and show up as halo, seam, or contrast loss.",
+      "required_inputs": [
+        "foreground_patch",
+        "background_patch",
+        "input_soft_alpha",
+        "input_boundary_roi_mask",
+        "input_person_mask"
+      ],
+      "required_targets": [
+        "gt_soft_alpha",
+        "gt_boundary_mask",
+        "gt_occlusion_band"
+      ],
+      "primary_metrics": [
+        "boundary_f1",
+        "alpha_mae",
+        "halo_proxy"
+      ]
+    }
+  ],
+  "semantic_boundary_tags": [
+    "mixed_boundary",
+    "face",
+    "hair",
+    "hand",
+    "cloth",
+    "occluded",
+    "semi_transparent",
+    "hard_negative"
+  ],
+  "split_policy_options": [
+    "reviewed_split_v1",
+    "temporal_quarantine_v1"
+  ]
+}

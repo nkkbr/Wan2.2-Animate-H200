@@ -1,0 +1,49 @@
+{
+  "reference_route_id": "optimization8_non_train_reviewed_v3",
+  "routes": [
+    {
+      "id": "optimization8_non_train_reviewed_v3",
+      "kind": "reference_baseline",
+      "family": "frozen_non_train",
+      "available": true,
+      "reviewed_metrics": "runs/optimization8_step01_round3/baseline_metrics_v3.json",
+      "notes": "Reviewed v3 non-train reference baseline used for Tier3 feasibility playback."
+    },
+    {
+      "id": "external_alpha_matanyone_round2",
+      "kind": "playback_candidate",
+      "family": "external_video_matting",
+      "available": true,
+      "gate_json": "runs/optimization7_step01b_round2_ab/matanyone_v1_official_gate.json",
+      "metrics_json": "runs/optimization7_step01b_round2_ab/matanyone_v1_official_metrics.json",
+      "notes": "Representative external-alpha failure from a genuinely different model family."
+    },
+    {
+      "id": "trainable_alpha_round1",
+      "kind": "playback_candidate",
+      "family": "trainable_alpha",
+      "available": true,
+      "gate_json": "runs/optimization8_step03_round1/gate_result.json",
+      "reviewed_metrics": "runs/optimization8_step03_round1/candidate_metrics_v3.json",
+      "notes": "Best-of-three trainable alpha baseline. Strong boundary-F1 novelty but weak continuous-alpha gains."
+    },
+    {
+      "id": "semantic_experts_round1",
+      "kind": "playback_candidate",
+      "family": "semantic_experts",
+      "available": true,
+      "gate_json": "runs/optimization8_step04_round1/gate_result_with_smoke.json",
+      "reviewed_metrics": "runs/optimization8_step04_round1/candidate_metrics_v3.json",
+      "notes": "Least invasive semantic-expert route; reviewed gains flat and smoke negative."
+    },
+    {
+      "id": "loss_stack_round2",
+      "kind": "playback_candidate",
+      "family": "compositing_aware_loss",
+      "available": true,
+      "gate_json": "runs/optimization8_step05_round2/gate_result_with_smoke.json",
+      "reviewed_metrics": "runs/optimization8_step05_round2/candidate_metrics_v3.json",
+      "notes": "Best reviewed compositing-aware loss variant; smoke strongly negative."
+    }
+  ]
+}

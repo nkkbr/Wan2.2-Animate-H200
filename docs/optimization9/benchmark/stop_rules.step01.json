@@ -1,0 +1,25 @@
+{
+  "upgrade_candidate": {
+    "minimum_reviewed_pass_count": 2,
+    "boundary_f1_gain_pct": 8.0,
+    "alpha_mae_reduction_pct": 10.0,
+    "trimap_error_reduction_pct": 10.0,
+    "minimum_positive_smoke_signals": 1,
+    "minimum_semantic_gain_pct": 8.0
+  },
+  "interesting_but_unproven": {
+    "strong_boundary_f1_gain_pct": 25.0,
+    "strong_semantic_gain_pct": 10.0,
+    "maximum_severe_smoke_regression_pct": -5.0,
+    "minimum_any_continuous_gain_pct": 0.0
+  },
+  "reject": {
+    "flat_reviewed_threshold_pct": 1.0,
+    "severe_smoke_regression_pct": -5.0
+  },
+  "failure_patterns": {
+    "threshold_only_gain_max_alpha_mae_reduction_pct": 2.0,
+    "threshold_only_gain_max_trimap_reduction_pct": 2.0,
+    "uniform_negative_threshold_pct": 0.0
+  }
+}

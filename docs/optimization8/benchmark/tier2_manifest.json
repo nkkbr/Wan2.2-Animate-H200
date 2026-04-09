@@ -1,0 +1,63 @@
+{
+  "reference_baseline_id": "non_trainable_best_from_optimization7",
+  "amplifier_baseline_id": "trainable_alpha_best",
+  "candidates": [
+    {
+      "id": "non_trainable_best_from_optimization7",
+      "role": "reference_baseline",
+      "available": true,
+      "reviewed_metrics": "runs/optimization8_step01_round3/baseline_metrics_v3.json",
+      "maintenance_cost": "low",
+      "training_required": false,
+      "extra_inference_passes": 0,
+      "notes": "Frozen reviewed v3 non-train baseline. Optimization7 Step01/01b produced no promotable external-alpha winner."
+    },
+    {
+      "id": "trainable_alpha_best",
+      "role": "tier2_baseline",
+      "available": true,
+      "reviewed_metrics": "runs/optimization8_step03_round1/candidate_metrics_v3.json",
+      "gate_result": "runs/optimization8_step03_round1/gate_result.json",
+      "smoke_metrics": "runs/optimization8_step03_round1_smoke/metrics/candidate_replacement_metrics.json",
+      "maintenance_cost": "medium",
+      "training_required": true,
+      "extra_inference_passes": 1,
+      "notes": "Optimization8 Step03 best-of-three = Round 1. Research baseline only."
+    },
+    {
+      "id": "semantic_experts_best",
+      "role": "candidate",
+      "available": true,
+      "reviewed_metrics": "runs/optimization8_step04_round1/candidate_metrics_v3.json",
+      "gate_result": "runs/optimization8_step04_round1/gate_result_with_smoke.json",
+      "smoke_metrics": "runs/optimization8_step04_round1_smoke/metrics/candidate_replacement_metrics.json",
+      "smoke_baseline_metrics": "runs/optimization8_step03_round1_smoke/metrics/candidate_replacement_metrics.json",
+      "maintenance_cost": "high",
+      "training_required": true,
+      "extra_inference_passes": 2,
+      "notes": "Optimization8 Step04 best-of-three = Round 1. Semantic expert route."
+    },
+    {
+      "id": "best_loss_stack_variant",
+      "role": "candidate",
+      "available": true,
+      "reviewed_metrics": "runs/optimization8_step05_round2/candidate_metrics_v3.json",
+      "gate_result": "runs/optimization8_step05_round2/gate_result_with_smoke.json",
+      "smoke_metrics": "runs/optimization8_step05_round2_smoke/metrics/candidate_replacement_metrics.json",
+      "smoke_baseline_metrics": "runs/optimization8_step03_round1_smoke/metrics/candidate_replacement_metrics.json",
+      "maintenance_cost": "high",
+      "training_required": true,
+      "extra_inference_passes": 1,
+      "notes": "Optimization8 Step05 best-of-three = Round 2. Compositing-aware loss stack route."
+    },
+    {
+      "id": "tier2_full_best",
+      "role": "candidate",
+      "available": false,
+      "maintenance_cost": "unknown",
+      "training_required": true,
+      "extra_inference_passes": 0,
+      "notes": "No combined Tier2 route from Steps 03-05 was strong enough to freeze as a full-stack candidate."
+    }
+  ]
+}
