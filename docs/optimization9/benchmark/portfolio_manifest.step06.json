@@ -1,0 +1,45 @@
+{
+  "protocol_reference": "docs/optimization9/benchmark/feasibility_manifest.step01.json",
+  "routes": [
+    {
+      "id": "bridge_round1",
+      "route_type": "bridge",
+      "round": 1,
+      "engineering_complexity": 2,
+      "structure_delta": 2,
+      "gate_result": "runs/optimization9_step02_round1_v7/gate_result_v2.json",
+      "findings": "docs/optimization9/benchmark/02-generative-mask-to-matte-bridge-model-prototype-findings.md",
+      "notes": "Lightest-weight Tier3 bridge route."
+    },
+    {
+      "id": "layer_round3",
+      "route_type": "layer",
+      "round": 3,
+      "engineering_complexity": 3,
+      "structure_delta": 4,
+      "gate_result": "runs/optimization9_step03_round3/gate_result_v2.json",
+      "findings": "docs/optimization9/benchmark/03-layer-decomposition-and-omnimatte-style-feasibility-findings.md",
+      "notes": "Three-layer decomposition route with occlusion-oriented positive mode."
+    },
+    {
+      "id": "rgba_round2",
+      "route_type": "rgba",
+      "round": 2,
+      "engineering_complexity": 3,
+      "structure_delta": 4,
+      "gate_result": "runs/optimization9_step04_round2/gate_result.json",
+      "findings": "docs/optimization9/benchmark/04-rgba-transparent-foreground-feasibility-findings.md",
+      "notes": "Paired foreground RGB plus alpha route."
+    },
+    {
+      "id": "renderable_round2",
+      "route_type": "renderable",
+      "round": 2,
+      "engineering_complexity": 4,
+      "structure_delta": 5,
+      "gate_result": "runs/optimization9_step05_round2/gate_result.json",
+      "findings": "docs/optimization9/benchmark/05-renderable-foreground-and-3d-like-feasibility-findings.md",
+      "notes": "Temporal renderable foreground state route."
+    }
+  ]
+}
