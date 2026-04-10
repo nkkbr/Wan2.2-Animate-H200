@@ -141,6 +141,97 @@ replacement conditioning and no boundary refine. Experimental options are kept
 in the codebase for reproducibility and future research, but they should not be
 enabled by default.
 
+## Recommended Usage For This Fork
+
+The full path-agnostic usage guide is:
+
+- [`docs/animate_replacement_h200_usage.md`](docs/animate_replacement_h200_usage.md)
+
+The short version is below. Edit the checkpoint, driving-video, and reference
+image paths before running it.
+
+```bash
+set -euo pipefail
+
+# Optional:
+# conda activate wan
+
+export CUDA_VISIBLE_DEVICES=0
+
+export REPO_ROOT="$(pwd)"
+export GEN_CKPT="/path/to/Wan2.2-Animate-14B"
+export PRE_CKPT="$GEN_CKPT/process_checkpoint"
+export VIDEO="/path/to/driving_video.mp4"
+export REF="/path/to/reference_image.png"
+
+export RUN="infer_$(date -u +%Y%m%d_%H%M%S)"
+export OUT="$REPO_ROOT/runs/$RUN"
+mkdir -p "$OUT/outputs" "$OUT/debug/generate"
+
+python wan/modules/animate/preprocess/preprocess_data.py \
+  --ckpt_path "$PRE_CKPT" \
+  --video_path "$VIDEO" \
+  --refer_path "$REF" \
+  --save_path "$OUT/preprocess" \
+  --replace_flag \
+  --fps -1 \
+  --resolution_area 1280 720 \
+  --analysis_resolution_area 1280 720 \
+  --analysis_min_short_side 720 \
+  --preprocess_runtime_profile h200_extreme \
+  --multistage_preprocess_mode h200_extreme \
+  --sam_runtime_profile h200_safe \
+  --sam_chunk_len 20 \
+  --sam_keyframes_per_chunk 4 \
+  --sam_prompt_mode mask_seed \
+  --no-sam_use_negative_points \
+  --sam_reprompt_interval 0 \
+  --no-sam_apply_postprocessing \
+  --face_analysis_mode heuristic \
+  --pose_motion_stack_mode v1 \
+  --soft_mask_mode soft_band \
+  --boundary_fusion_mode v2 \
+  --parsing_mode heuristic \
+  --matting_mode heuristic \
+  --bg_inpaint_mode video_v2 \
+  --reference_normalization_mode structure_match \
+  --lossless_intermediate
+
+python scripts/eval/check_animate_contract.py \
+  --src_root_path "$OUT/preprocess" \
+  --replace_flag \
+  --skip_synthetic
+
+python generate.py \
+  --task animate-14B \
+  --ckpt_dir "$GEN_CKPT" \
+  --src_root_path "$OUT/preprocess" \
+  --save_file "$OUT/outputs/replacement_best.mkv" \
+  --output_format ffv1 \
+  --replace_flag \
+  --use_relighting_lora \
+  --offload_model False \
+  --frame_num 77 \
+  --refert_num 5 \
+  --sample_solver unipc \
+  --sample_steps 20 \
+  --sample_shift 5.0 \
+  --sample_guide_scale 1.0 \
+  --replacement_mask_mode soft_band \
+  --replacement_conditioning_mode legacy \
+  --replacement_mask_downsample_mode area \
+  --replacement_boundary_strength 0.5 \
+  --replacement_transition_low 0.1 \
+  --replacement_transition_high 0.9 \
+  --overlap_blend_mode mask_aware \
+  --temporal_handoff_mode pixel \
+  --boundary_refine_mode none \
+  --log_runtime_stats \
+  --save_debug_dir "$OUT/debug/generate"
+
+echo "Output: $OUT/outputs/replacement_best.mkv"
+```
+
 ## Documentation Map
 
 The major design and evaluation record is organized under:
