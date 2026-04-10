@@ -1,3 +1,170 @@
+# Wan2.2 Animate Replacement Research Fork
+
+This repository is a research and engineering fork of the original
+[Wan2.2](https://github.com/Wan-Video/Wan2.2) repository. The upstream README
+is preserved below after this section. The changes in this fork focus on
+**Wan2.2-Animate character replacement**, especially replacement-mask quality,
+preprocess quality, H200-oriented runtime behavior, diagnostics, and repeated
+attempts to improve the visible sharpness of the replaced character boundary.
+
+The practical conclusion is important:
+
+- The fork is significantly more instrumented, more reproducible, and more
+  controllable than the original Animate replacement workflow.
+- The strongest production-style path currently remains a conservative
+  generation path: high-quality preprocess, then `legacy` replacement
+  conditioning with `boundary_refine_mode=none`.
+- Many experimental edge-refinement routes were implemented and benchmarked,
+  but they did **not** produce a stable, promotable improvement in final
+  character-edge sharpness.
+- The original Wan2.2 model backbone is still the main generation backbone.
+  This fork does not claim to solve all hair, fingers, cloth-edge, and
+  semi-transparent boundary artifacts.
+
+## What This Fork Adds
+
+### 1. Preprocess contracts, metadata, and diagnostics
+
+The Animate preprocess/generate interface was formalized with metadata,
+manifest-style run tracking, artifact contracts, runtime stats, and regression
+checks. This makes it much easier to identify whether a failure comes from
+pose, face, mask, background, reference normalization, or downstream generate
+consumption.
+
+Notable additions include:
+
+- structured preprocess metadata and artifact validation
+- contract checks under `scripts/eval/`
+- runtime statistics and debug export paths
+- lossless intermediate formats for quality-sensitive replacement data
+- benchmark and findings documents under `docs/optimization*/`
+
+### 2. H200-oriented preprocess and runtime profiles
+
+This fork adds explicit H200-oriented preprocess profiles and multistage
+analysis paths. The most useful stable path is based on:
+
+- `preprocess_runtime_profile=h200_extreme`
+- `sam_runtime_profile=h200_safe`
+- `multistage_preprocess_mode=h200_extreme`
+- higher-resolution analysis and ROI stages
+- explicit runtime and memory logging
+
+These changes are primarily quality/stability-oriented, not speed-oriented.
+End-to-end inference is usually not faster than the original workflow when the
+high-quality preprocess path is enabled.
+
+### 3. Stronger preprocess signals
+
+The fork adds or upgrades several Animate replacement preprocess signals:
+
+- soft replacement masks and boundary bands
+- parsing/matting-style boundary fusion
+- `hard_foreground`, `soft_alpha`, `boundary_band`, `occlusion_band`,
+  `uncertainty_map`, and `background_keep_prior`
+- video-consistent clean plate background (`clean_plate_video_v2`)
+- visible support, unresolved-region, and background-confidence signals
+- structure-aware reference normalization
+- complete face analysis artifacts
+- multiscale pose, hand, limb, and motion tracking artifacts
+
+Several of these produced measurable preprocess-side improvements. For example,
+the Optimization3 evaluation showed strong improvements in face tracking and
+motion stability, including approximately 38% lower face-center jitter, 62%
+lower face-width jitter, 38% lower body jitter, and 43% lower hand jitter in the
+tested 10-second validation case. Background unresolved-region metrics also
+improved with the video clean plate path.
+
+### 4. Stable recommended generation path
+
+Although many richer generation paths were implemented, the current recommended
+production-style generate configuration is intentionally conservative:
+
+- `replacement_conditioning_mode=legacy`
+- `boundary_refine_mode=none`
+- `replacement_mask_mode=soft_band`
+- `overlap_blend_mode=mask_aware`
+- `temporal_handoff_mode=pixel`
+- output with `ffv1`/MKV first, then transcode to MP4 only for preview
+
+This avoids enabling experimental branches that did not pass the gate
+benchmarks.
+
+### 5. Extensive negative-result research on edge sharpness
+
+A large part of this fork is a documented research record of what was tried and
+what did not work well enough. The following families of methods were
+implemented, tested, and generally **not promoted**:
+
+- deterministic pixel-domain boundary refinement
+- ROI-based two-stage boundary refinement
+- semantic boundary specialization
+- local edge restoration
+- generate-side candidate search
+- external alpha/matting candidates such as BackgroundMattingV2, RVM, and
+  MatAnyone in the tested configurations
+- trainable alpha/matte completion baselines
+- semantic edge experts
+- compositing-aware losses
+- mask-to-matte bridge models
+- layer-decomposition prototypes
+- RGBA foreground prototypes
+- renderable foreground prototypes
+- H200 high/ extreme tier orchestration on the current route
+
+The most interesting high-risk signal so far was the renderable foreground
+prototype in Optimization9. It improved some continuous alpha, seam,
+background, and temporal consistency metrics, but it still failed the main
+reviewed boundary-quality gate and was therefore kept as
+`interesting_but_unproven`, not promoted.
+
+## Current Practical Status
+
+Use this fork if you want:
+
+- a more robust and inspectable Wan-Animate replacement pipeline
+- stronger preprocess artifacts and diagnostics
+- H200-oriented preprocess profiles
+- benchmarked failure evidence for several edge-sharpness strategies
+- a clean base for further replacement/alpha/layer-decomposition research
+
+Do not expect:
+
+- a guaranteed large improvement in final visible edge sharpness over the
+  original model
+- faster end-to-end inference under the high-quality preprocess path
+- the experimental Optimization7/8/9 branches to be production-ready
+
+The best current inference path is the stable path described in the discussion
+and docs: high-quality preprocess, then conservative generate using `legacy`
+replacement conditioning and no boundary refine. Experimental options are kept
+in the codebase for reproducibility and future research, but they should not be
+enabled by default.
+
+## Documentation Map
+
+The major design and evaluation record is organized under:
+
+- `docs/optimization1/` and `docs/optimization2/`: early Animate replacement
+  contracts, validation, H200 preprocess profiles, boundary fusion, clean plate,
+  and reference normalization
+- `docs/optimization3/`: high-precision preprocess stack, face/motion systems,
+  background visibility, rich signals, and preprocess candidate selection
+- `docs/optimization4/`: edge-sharpness focused heuristic experiments and
+  generate-side candidate search
+- `docs/optimization5/`: edge reconstruction roadmap and experiments
+- `docs/optimization6/`: next-generation route attempts, including external
+  alpha, foreground/background decoupling, trainable models, and H200 tier
+  orchestration
+- `docs/optimization7/`: practical external alpha/matting breakthrough attempts
+- `docs/optimization8/`: reviewed data expansion and training-stack attempts
+- `docs/optimization9/`: high-risk structural feasibility prototypes and final
+  Tier3 portfolio decision
+
+The sections below are the original Wan2.2 README content.
+
+---
+
 # Wan2.2
 
 <p align="center">
@@ -504,4 +671,3 @@ We would like to thank the contributors to the [SD3](https://huggingface.co/stab
 
 ## Contact Us
 If you would like to leave a message to our research or product teams, feel free to join our [Discord](https://discord.gg/AKNgpMK4Yj) or [WeChat groups](https://gw.alicdn.com/imgextra/i2/O1CN01tqjWFi1ByuyehkTSB_!!6000000000015-0-tps-611-1279.jpg)!
-
